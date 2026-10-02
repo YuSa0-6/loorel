@@ -1,0 +1,19 @@
+# Settings shared by every endpoint. models/*.yaml adds the per-model parts.
+# Runpod templates are not used: in REST API v2 a template is copied into the
+# endpoint once and never linked again, so the repo holds the shared settings.
+
+# Pin an exact tag. Releases: https://github.com/runpod-workers/worker-vllm/releases
+image: runpod/worker-v1-vllm:v2.27.2
+type: QUEUE
+disk: 50 # GB, container disk (the model is downloaded here)
+flashboot: FLASHBOOT
+timeout: 600000 # ms per request
+idleTimeout: 5 # seconds before an idle worker stops
+scaling:
+  type: QUEUE_DELAY
+  queueDelay: 4
+
+# vLLM worker env vars: https://docs.runpod.io/serverless/vllm/environment-variables
+env:
+  GPU_MEMORY_UTILIZATION: "0.90"
+  MAX_CONCURRENCY: "30"

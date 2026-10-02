@@ -1,0 +1,40 @@
+{
+  "name": "cf-runpod-ai",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prepare": "vp config",
+    "check": "vp check",
+    "test": "vp test run",
+    "plan": "node infra/runpod/sync.ts --plan",
+    "apply": "node infra/runpod/sync.ts --apply"
+  },
+  "dependencies": {
+    "@runpod/ai-sdk-provider": "1.4.0",
+    "ai": "^6",
+    "valibot": "^1.5.0",
+    "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "@types/node": "22",
+    "typescript": "^7.0.2",
+    "vite-plus": "catalog:"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "packageManager": "pnpm@10.0.0",
+  "pnpm": {
+    "overrides": {
+      "vite@*": "npm:@voidzero-dev/vite-plus-core@1.0.0"
+    },
+    "peerDependencyRules": {
+      "allowAny": [
+        "vite"
+      ],
+      "allowedVersions": {
+        "vite": "*"
+      }
+    }
+  }
+}
