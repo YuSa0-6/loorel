@@ -77,7 +77,7 @@ PROVIDER_BODY=$(jq -nc --arg slug "$PROVIDER_SLUG" --arg url "$PROVIDER_BASE_URL
   slug: $slug,
   base_url: $url,
   enable: true,
-  description: "Runpod Serverless (managed by cf-runpod-ai)"
+  description: "Runpod Serverless (managed by Loorel)"
 }')
 
 provider=$(cf GET "/custom-providers?per_page=50" | jq -c --arg slug "$PROVIDER_SLUG" '.result[] | select(.slug == $slug)')

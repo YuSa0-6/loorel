@@ -54,7 +54,7 @@ function syncedQwen(overrides: Partial<RemoteEndpoint> = {}): RemoteEndpoint {
 }
 
 async function makeRepo(models: Record<string, string>, endpointsJson?: unknown): Promise<string> {
-  const root = await mkdtemp(path.join(tmpdir(), "cf-runpod-ai-"));
+  const root = await mkdtemp(path.join(tmpdir(), "loorel-"));
   await mkdir(path.join(root, "infra/runpod"), { recursive: true });
   await mkdir(path.join(root, "models"));
   await writeFile(path.join(root, "infra/runpod/defaults.yaml"), DEFAULTS);
