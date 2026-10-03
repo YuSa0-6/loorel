@@ -1,13 +1,13 @@
 <div align="center">
 
-# cf-runpod-ai
+# Loorel（ルーレル）
 
 **YAML を 1 枚足すと、GPU エンドポイントができる。**
 
 `models/*.yaml` を Runpod Serverless の vLLM エンドポイントに反映し、<br>
 アプリからは Cloudflare AI Gateway 経由で呼び出します。
 
-[Quickstart](#quickstart) · [Why](#why-cf-runpod-ai) · [しくみ](#しくみ) · [リファレンス](#リファレンス) · [FAQ](#よくある質問) · [ロードマップ](#ロードマップ)
+[Quickstart](#quickstart) · [Why](#why-loorel) · [しくみ](#しくみ) · [リファレンス](#リファレンス) · [FAQ](#よくある質問) · [ロードマップ](#ロードマップ)
 
 `preview` · 実装 3 / 7
 
@@ -48,7 +48,7 @@ vllm:
 </tr>
 </table>
 
-## Why cf-runpod-ai
+## Why Loorel
 
 GPU の設定をコンソールで手作業するかわりに、リポジトリのファイルを正解にします。
 
