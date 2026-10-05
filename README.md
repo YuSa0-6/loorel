@@ -9,7 +9,7 @@
 
 [Quickstart](#quickstart) · [Why](#why-loorel) · [しくみ](#しくみ) · [リファレンス](#リファレンス) · [FAQ](#よくある質問) · [ロードマップ](#ロードマップ)
 
-`preview` · 実装 3 / 7
+`preview` · 実装 4 / 7
 
 </div>
 
@@ -168,28 +168,84 @@ RUNPOD_API_KEY=... pnpm plan
 +     flashboot: "FLASHBOOT"
 ```
 
-### 5. アプリから呼ぶ ⏳（`src/ai.ts` は予定）
+### 5. SDK で呼ぶ 🧪
 
-エンドポイントごとに `baseURL` を作り、モデル名には YAML の `name` を渡します。AI SDK は v6 を使います。
+`src/ai.ts` の `createLoorelModel` が、既存エンドポイント用の AI SDK モデルを作ります。AI SDK は v6、Runpod provider は 1.4.0 です。モデル名は YAML の `name`、エンドポイント ID は接続先として別に渡します。
+
+Gateway の `RUNPOD_BASE_URL` は `/openai/v1` までの URL です。`/chat/completions` は SDK が付けます。
 
 ```ts
-import { createRunpod } from "@runpod/ai-sdk-provider";
 import { generateText } from "ai";
-import endpoints from "../endpoints.json";
+import { createLoorelModel } from "./src/ai.ts";
 
-const GATEWAY = `https://gateway.ai.cloudflare.com/v1/${ACCOUNT_ID}/runpod/custom-runpod`;
-
-const runpod = createRunpod({
-  apiKey: process.env.RUNPOD_API_KEY,
-  baseURL: `${GATEWAY}/v2/${endpoints["qwen3-8b"].id}/openai/v1`,
-  headers: { "cf-aig-authorization": `Bearer ${process.env.CF_AIG_TOKEN}` },
+const model = createLoorelModel({
+  model: "qwen3-8b", // = OPENAI_SERVED_MODEL_NAME_OVERRIDE
+  apiKey: process.env.RUNPOD_API_KEY ?? "",
+  baseURL: process.env.RUNPOD_BASE_URL,
+  gatewayToken: process.env.CF_AIG_TOKEN,
 });
 
 const { text } = await generateText({
-  model: runpod("qwen3-8b"), // = OPENAI_SERVED_MODEL_NAME_OVERRIDE
+  model,
   prompt: "こんにちは",
 });
 ```
+
+Runpod へ直接接続するときは、`baseURL` のかわりに `endpointId` を渡します。接続先を必須にしているため、公開モデルへの意図しないフォールバックはありません。
+
+#### パイプラインからの推論 smoke test
+
+`pnpm smoke` は SDK を使って 1 回だけ推論し、空でないことに加えて `LOOREL_OK` が返るか確認します。HTTP 200 でも空文字・異なる回答・トークン上限による打ち切りは失敗です。固定プロンプト、`temperature: 0`、最大 32 出力トークン、SDK のリトライなしで動きます。
+
+既存のエンドポイント ID を用意し、キーは環境変数に渡します。新しいエンドポイントを作成・変更・削除するコマンドではありません。apply と `endpoints.json` の生成は引き続き未実装です。
+
+```sh
+# RUNPOD_API_KEY は CI の Secret / 安全な環境変数で設定する
+pnpm -s smoke --model qwen3-8b --endpoint-id <endpoint-id> \
+  --timeout-ms 120000 --out smoke.json
+```
+
+Gateway 経由では ID のかわりに、明示的な URL と `CF_AIG_TOKEN` を指定します。Gateway のキャッシュは無効にしてください。実推論を確認するための smoke test です。
+
+```sh
+pnpm -s smoke --model qwen3-8b \
+  --base-url "https://gateway.ai.cloudflare.com/v1/${CLOUDFLARE_ACCOUNT_ID}/runpod/custom-runpod/v2/${RUNPOD_ENDPOINT_ID}/openai/v1" \
+  --out smoke.json
+```
+
+CLI の `--model` / `--endpoint-id` / `--base-url` を省略すると、`LOOREL_MODEL` / `RUNPOD_ENDPOINT_ID` / `RUNPOD_BASE_URL` を使います。ID と URL はどちらか一方だけ設定します。明示的な接続先の引数は環境変数の接続先より優先されます。タイムアウトは既定 120 秒、指定可能な範囲は 1〜600000 ミリ秒です。コールドスタートが長い場合は、処理時間を見て調整してください。
+
+標準出力は JSON 1 行です。`--out` を指定すると、成功時も推論・設定失敗時も同じ JSON をファイルに保存します（`--out` 自体を解析できない場合を除く）。SDK 例外・HTTP 応答本文・想定外の生成文はログに出さず、認証情報の混入を防ぎます。
+
+```json
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "model": "qwen3-8b",
+  "elapsedMs": 1234,
+  "text": "LOOREL_OK",
+  "finishReason": "stop",
+  "usage": { "inputTokens": 12, "outputTokens": 4, "totalTokens": 16 }
+}
+```
+
+終了コードは `0` が検証成功、`1` が HTTP・タイムアウト・応答検証などの失敗、`2` が引数・設定・結果ファイルの書き込みエラーです。設定エラーでは推論リクエストを送りません。`usage` が返らない場合のトークン数は `null` です。
+
+GitHub Actions などの既存パイプラインには、承認済みの推論ステップとして組み込めます。たとえば直接接続の場合:
+
+```yaml
+- name: Verify existing Runpod endpoint
+  env:
+    RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+    RUNPOD_ENDPOINT_ID: ${{ vars.RUNPOD_ENDPOINT_ID }}
+    LOOREL_MODEL: qwen3-8b
+  run: pnpm -s smoke --out smoke.json
+```
+
+> [!WARNING]
+> **`pnpm smoke` の実行は GPU を起動し、推論料金が発生する可能性があります。** 通常の `pnpm test` は HTTP モックだけを使い、Runpod に接続しません。PR のたびに実推論が走る workflow は追加していません。直接接続・Gateway 経由のリクエスト形状はモックで検証済みですが、実エンドポイントでの推論と Gateway の転送は未検証です。
+
+実装の根拠: [Runpod provider の設定と SDK の使い方](https://github.com/runpod/ai-sdk-provider#provider-instance)。CLI はリソース同期を行う REST API v2 と分離されています。
 
 ## リファレンス
 
@@ -342,15 +398,15 @@ Runpod の AI SDK provider は、モデル ID をそのまま vLLM へのリク�
 
 実装は番号の順に、動作を確かめてから次へ進みます。
 
-| #   | 内容                                                        | 状態                             |
-| --- | ----------------------------------------------------------- | -------------------------------- |
-| 1   | `infra/cloudflare/setup.sh`：Gateway とカスタムプロバイダー | ✅ 動作確認済み                  |
-| 2   | 共通設定の持ち方（`defaults.yaml`）                         | ✅ 決定                          |
-| 3   | `sync.ts --plan`：検証と差分                                | 🧪 テスト 15 件・実 API 確認待ち |
-| 4   | `sync.ts --apply`：作成・更新と `endpoints.json`            | ⏳ 予定                          |
-| 5   | GitHub Actions：PR で plan、main で apply                   | ⏳ 予定                          |
-| 6   | `endpoints.json` の bot PR                                  | ⏳ 予定                          |
-| 7   | `src/ai.ts`：Gateway 経由で 1 回呼ぶ                        | ⏳ 予定                          |
+| #   | 内容                                                        | 状態                                |
+| --- | ----------------------------------------------------------- | ----------------------------------- |
+| 1   | `infra/cloudflare/setup.sh`：Gateway とカスタムプロバイダー | ✅ 動作確認済み                     |
+| 2   | 共通設定の持ち方（`defaults.yaml`）                         | ✅ 決定                             |
+| 3   | `sync.ts --plan`：検証と差分                                | 🧪 テスト 15 件・実 API 確認待ち    |
+| 4   | `sync.ts --apply`：作成・更新と `endpoints.json`            | ⏳ 予定                             |
+| 5   | GitHub Actions：PR で plan、main で apply                   | ⏳ 予定                             |
+| 6   | `endpoints.json` の bot PR                                  | ⏳ 予定                             |
+| 7   | `src/ai.ts`・`pnpm smoke`：SDK 推論と応答検証               | 🧪 モックで検証済み・実推論は未検証 |
 
 ## 開発
 

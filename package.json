@@ -7,7 +7,8 @@
     "check": "vp check",
     "test": "vp test run",
     "plan": "node infra/runpod/sync.ts --plan",
-    "apply": "node infra/runpod/sync.ts --apply"
+    "apply": "node infra/runpod/sync.ts --apply",
+    "smoke": "node infra/runpod/smoke.ts"
   },
   "dependencies": {
     "@runpod/ai-sdk-provider": "1.4.0",
