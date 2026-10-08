@@ -147,3 +147,4 @@ vite.config.ts.timestamp-*
 node-compile-cache/
 .vite-hooks/_/
 plan.md
+apply.md

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -187,4 +187,123 @@ describe("sync --plan", () => {
     expect(code).toBe(1);
     expect(lines.join("\n")).toContain("401 Unauthorized: missing bearer token");
   });
+});
+
+const readIds = async (root: string) =>
+  JSON.parse(await readFile(path.join(root, "endpoints.json"), "utf8")) as unknown;
+
+/** Makes Runpod reject the creation of one endpoint, as it does for an invalid spec. */
+function rejectCreate(runpod: FakeRunpod, name: string): FakeRunpod {
+  const inner = runpod.fetch;
+  runpod.fetch = async (input, init) => {
+    const body = init?.body ? (JSON.parse(init.body as string) as { name?: string }) : {};
+    if (init?.method === "POST" && body.name === name) {
+      return new Response(JSON.stringify({ title: "Unprocessable", status: 422, detail: "bad" }), {
+        status: 422,
+      });
+    }
+    return inner(input, init);
+  };
+  return runpod;
+}
+
+describe("sync --apply", () => {
+  test("a new model is created, recorded, and the next plan has no changes", async () => {
+    const runpod = fakeRunpod();
+    const root = await makeRepo({ "qwen3-8b.yaml": QWEN });
+    const { code, output } = await run(root, runpod, "--apply");
+    expect(code).toBe(0);
+    expect(output).toContain("- qwen3-8b: created (ep1)");
+    expect(writes(runpod)).toEqual([
+      expect.objectContaining({ method: "POST", path: "/v2/serverless" }),
+    ]);
+    expect(await readIds(root)).toEqual({ "qwen3-8b": { id: "ep1" } });
+
+    const again = await run(root, runpod, "--plan");
+    expect(again.output).toContain("0 to create, 0 to update, 1 unchanged");
+  });
+
+  test("an update sends only the changed fields", async () => {
+    const runpod = fakeRunpod([syncedQwen({ workers: { min: 0, max: 1, idleTimeout: 5 } })]);
+    const root = await makeRepo({ "qwen3-8b.yaml": QWEN });
+    const { code, output } = await run(root, runpod, "--apply");
+    expect(code).toBe(0);
+    expect(output).toContain("- qwen3-8b: updated (ep-qwen)");
+    expect(writes(runpod)).toEqual([
+      {
+        method: "PATCH",
+        path: "/v2/serverless/ep-qwen",
+        body: { workers: { min: 0, max: 2, idleTimeout: 5 } },
+      },
+    ]);
+    expect(runpod.endpoints).toEqual([syncedQwen()]);
+    expect(await readIds(root)).toEqual({ "qwen3-8b": { id: "ep-qwen" } });
+  });
+
+  test("no changes means no writes to Runpod", async () => {
+    const runpod = fakeRunpod([syncedQwen()]);
+    const { code, output } = await run(
+      await makeRepo({ "qwen3-8b.yaml": QWEN }),
+      runpod,
+      "--apply",
+    );
+    expect(code).toBe(0);
+    expect(output).toContain("- nothing to change");
+    expect(writes(runpod)).toEqual([]);
+  });
+
+  test("an endpoint whose YAML was removed stays, and stays recorded, without --prune", async () => {
+    const runpod = fakeRunpod([syncedQwen()]);
+    const root = await makeRepo({}, { "qwen3-8b": { id: "ep-qwen" } });
+    const { code } = await run(root, runpod, "--apply");
+    expect(code).toBe(0);
+    expect(writes(runpod)).toEqual([]);
+    expect(await readIds(root)).toEqual({ "qwen3-8b": { id: "ep-qwen" } });
+  });
+
+  test("--prune deletes it and removes it from endpoints.json", async () => {
+    const other = syncedQwen({ id: "ep-manual", name: "manual" });
+    const runpod = fakeRunpod([syncedQwen(), other]);
+    const root = await makeRepo({}, { "qwen3-8b": { id: "ep-qwen" }, gone: { id: "ep-gone" } });
+    const { code, output } = await run(root, runpod, "--apply", "--prune");
+    expect(code).toBe(0);
+    expect(output).toContain("- delete qwen3-8b (ep-qwen)");
+    expect(output).toContain("- qwen3-8b: deleted (ep-qwen)");
+    // Endpoints that endpoints.json does not list are never deleted.
+    expect(runpod.endpoints).toEqual([other]);
+    expect(await readIds(root)).toEqual({});
+  });
+
+  test("the first error stops the run and endpoints.json keeps what exists", async () => {
+    const runpod = rejectCreate(
+      fakeRunpod([syncedQwen({ workers: { min: 0, max: 1, idleTimeout: 5 } })]),
+      "aaa",
+    );
+    const root = await makeRepo({
+      "aaa.yaml": QWEN.replace("qwen3-8b", "aaa"),
+      "qwen3-8b.yaml": QWEN,
+    });
+    const { code, output } = await run(root, runpod, "--apply", "--out", "apply.md");
+    expect(code).toBe(1);
+    expect(output).toContain("- aaa: failed: POST /serverless -> 422 Unprocessable: bad");
+    expect(output).toContain("- qwen3-8b: skipped");
+    expect(writes(runpod)).toEqual([]); // the rejected POST never reached the fake
+    expect(await readIds(root)).toEqual({ "qwen3-8b": { id: "ep-qwen" } });
+    expect(await readFile(path.join(root, "apply.md"), "utf8")).toContain("### Runpod apply");
+  });
+
+  test.each([[["--plan", "--apply"]], [["--plan", "--prune"]], [[]], [["--aply"]]])(
+    "%j is a usage error",
+    async (argv) => {
+      const runpod = fakeRunpod();
+      const { code, output } = await run(
+        await makeRepo({ "qwen3-8b.yaml": QWEN }),
+        runpod,
+        ...argv,
+      );
+      expect(code).toBe(2);
+      expect(output).toContain("usage:");
+      expect(runpod.requests).toEqual([]);
+    },
+  );
 });
