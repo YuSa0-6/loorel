@@ -9,7 +9,7 @@
 
 [Quickstart](#quickstart) · [Why](#why-loorel) · [しくみ](#しくみ) · [リファレンス](#リファレンス) · [FAQ](#よくある質問) · [ロードマップ](#ロードマップ)
 
-`preview` · 実装 4 / 7
+`preview` · 実装 7 / 7（実 API での動作確認待ち）
 
 </div>
 
@@ -72,14 +72,16 @@ flowchart LR
   E --> F["endpoints.json の<br>bot PR"]
 ```
 
-| #   | ステップ                                | 状態          |
-| --- | --------------------------------------- | ------------- |
-| 1   | `models/*.yaml` を追加して PR を作る    | ✅ 動く       |
-| 2   | plan が差分を表示（`sync.ts --plan`）   | 🧪 テスト済み |
-| 3   | main に merge                           | ⏳ 予定       |
-| 4   | 本番の承認（`environment: production`） | ⏳ 予定       |
-| 5   | apply が作成・更新（`sync.ts --apply`） | ⏳ 予定       |
-| 6   | `endpoints.json` を更新する bot PR      | ⏳ 予定       |
+| #   | ステップ                                | 状態                 |
+| --- | --------------------------------------- | -------------------- |
+| 1   | `models/*.yaml` を追加して PR を作る    | ✅ 動く              |
+| 2   | plan が差分を表示（`sync.ts --plan`）   | 🧪 テスト済み        |
+| 3   | main に merge                           | ✅ 動く              |
+| 4   | 本番の承認（`environment: production`） | 🧪 workflow 作成済み |
+| 5   | apply が作成・更新（`sync.ts --apply`） | 🧪 テスト済み        |
+| 6   | `endpoints.json` を更新する bot PR      | 🧪 workflow 作成済み |
+
+workflow の設定は [GitHub Actions](#github-actions) にまとめています。
 
 ### リクエストの通り道
 
@@ -197,7 +199,7 @@ Runpod へ直接接続するときは、`baseURL` のかわりに `endpointId` �
 
 `pnpm smoke` は SDK を使って 1 回だけ推論し、空でないことに加えて `LOOREL_OK` が返るか確認します。HTTP 200 でも空文字・異なる回答・トークン上限による打ち切りは失敗です。固定プロンプト、`temperature: 0`、最大 32 出力トークン、SDK のリトライなしで動きます。
 
-既存のエンドポイント ID を用意し、キーは環境変数に渡します。新しいエンドポイントを作成・変更・削除するコマンドではありません。apply と `endpoints.json` の生成は引き続き未実装です。
+既存のエンドポイント ID を用意し、キーは環境変数に渡します。新しいエンドポイントを作成・変更・削除するコマンドではありません。作成・更新は `sync.ts --apply` が担当します。
 
 ```sh
 # RUNPOD_API_KEY は CI の Secret / 安全な環境変数で設定する
@@ -291,6 +293,30 @@ flowchart LR
 | `scaling`     | `QUEUE_DELAY 4`                 | キューの待ち時間でワーカーを増やす                 |
 | `env`         | 2 件                            | 全モデル共通の vLLM 環境変数                       |
 
+### apply
+
+`pnpm apply` は plan と同じ差分を計算し、そのとおりに Runpod へ書き込みます。最後に `endpoints.json`（モデル名 → エンドポイント ID）を書き出します。
+
+```sh
+RUNPOD_API_KEY=... pnpm apply              # 作成・更新
+RUNPOD_API_KEY=... pnpm apply --prune      # YAML を消したエンドポイントの削除も行う
+RUNPOD_API_KEY=... pnpm apply --out apply.md
+```
+
+| 動作             | 内容                                                                                 |
+| ---------------- | ------------------------------------------------------------------------------------ |
+| 実行順           | モデル名の順に 1 件ずつ。最初のエラーで止まり、残りは `skipped` と表示する           |
+| 更新で送る項目   | plan に `!` で出た項目だけを PATCH で送る                                            |
+| 削除             | `--prune` のときだけ。`endpoints.json` に載っているエンドポイントに限る              |
+| `endpoints.json` | エラーで止まったときも、その時点で Runpod にあるエンドポイントの ID を書き出す       |
+| 終了コード       | `0` が成功、`1` が設定・API のエラー（途中で止まった場合を含む）、`2` が使い方の誤り |
+
+```markdown
+### Runpod apply
+
+- qwen3-8b: created (abc123xyz)
+```
+
 ### plan の読み方
 
 | 記号     | 意味                                    |
@@ -350,6 +376,30 @@ https://gateway.ai.cloudflare.com/v1/{account}/runpod/custom-runpod/v2/{endpoint
 | `/v2/{id}/openai/v1/models` | `/v2/{id}/openai/v1/models` | ✅ 届く |
 | `/{id}/run`（v2 なし）      | `/v1/{id}/run`              | ❌ 404  |
 
+## GitHub Actions
+
+| workflow                      | きっかけ                                                   | すること                                                               |
+| ----------------------------- | ---------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `.github/workflows/plan.yml`  | PR                                                         | `vp check`・テストのあと plan を PR コメントに出す（1 件を上書き更新） |
+| `.github/workflows/apply.yml` | main への push（`models/**`・`infra/runpod/**`）、手動実行 | 承認後に apply を実行し、`endpoints.json` が変わったら bot PR を作る   |
+
+手動実行（Actions → apply → Run workflow）では `prune` を選べます。apply は同時に 1 本だけ動き、後から来たものは順番待ちになります。
+
+### 最初に 1 回だけ行うリポジトリ設定
+
+| #   | 場所（Settings →）                       | 設定                                                                                  |
+| --- | ---------------------------------------- | ------------------------------------------------------------------------------------- |
+| 1   | Secrets and variables → Actions          | repository secret `RUNPOD_API_KEY_READONLY`（Read Only のキー。plan 用）              |
+| 2   | Environments                             | `production` を作り、Required reviewers に承認する人を入れる                          |
+| 3   | Environments → `production`              | Deployment branches を `main` だけにする                                              |
+| 4   | Environments → `production` → Secrets    | environment secret `RUNPOD_API_KEY`（書き込みできるキー。apply 用）                   |
+| 5   | Actions → General → Workflow permissions | 「Allow GitHub Actions to create and approve pull requests」をオンにする（bot PR 用） |
+
+書き込みできるキーは `production` の承認を通ったジョブにだけ渡ります。PR の plan には Read Only のキーだけが渡ります。fork からの PR には secret が渡らないため、plan はスキップされます。
+
+> [!NOTE]
+> bot PR は `GITHUB_TOKEN` で作るため、その PR では plan workflow が動きません。中身は `endpoints.json` だけなので、そのまま merge できます。
+
 ## よくある質問
 
 <details>
@@ -403,9 +453,9 @@ Runpod の AI SDK provider は、モデル ID をそのまま vLLM へのリク�
 | 1   | `infra/cloudflare/setup.sh`：Gateway とカスタムプロバイダー | ✅ 動作確認済み                     |
 | 2   | 共通設定の持ち方（`defaults.yaml`）                         | ✅ 決定                             |
 | 3   | `sync.ts --plan`：検証と差分                                | 🧪 テスト 15 件・実 API 確認待ち    |
-| 4   | `sync.ts --apply`：作成・更新と `endpoints.json`            | ⏳ 予定                             |
-| 5   | GitHub Actions：PR で plan、main で apply                   | ⏳ 予定                             |
-| 6   | `endpoints.json` の bot PR                                  | ⏳ 予定                             |
+| 4   | `sync.ts --apply`：作成・更新と `endpoints.json`            | 🧪 テスト 10 件・実 API 確認待ち    |
+| 5   | GitHub Actions：PR で plan、main で apply                   | 🧪 actionlint 済み・初回実行待ち    |
+| 6   | `endpoints.json` の bot PR                                  | 🧪 actionlint 済み・初回実行待ち    |
 | 7   | `src/ai.ts`・`pnpm smoke`：SDK 推論と応答検証               | 🧪 モックで検証済み・実推論は未検証 |
 
 ## 開発

@@ -1,0 +1,62 @@
+# main: after approval, create and update Runpod endpoints, then open a PR for endpoints.json.
+# Secret: RUNPOD_API_KEY in the "production" environment (a key that can write).
+name: apply
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "models/**"
+      - "infra/runpod/**"
+  workflow_dispatch:
+    inputs:
+      prune:
+        description: "Delete endpoints whose YAML was removed (only those in endpoints.json)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One apply at a time, in order. A queued run waits instead of being cancelled.
+concurrency:
+  group: runpod-apply
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Runpod apply
+        id: apply
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          PRUNE: ${{ inputs.prune && '--prune' || '' }}
+        run: pnpm -s apply $PRUNE --out apply.md
+      - name: Job summary
+        if: ${{ !cancelled() }}
+        run: '[ -f apply.md ] && cat apply.md >> "$GITHUB_STEP_SUMMARY" || true'
+      # Runs after a partial failure too, so endpoints created before the error are recorded.
+      - name: Pull request for endpoints.json
+        if: ${{ !cancelled() && steps.apply.outcome != 'skipped' }}
+        uses: peter-evans/create-pull-request@v7
+        with:
+          add-paths: endpoints.json
+          branch: bot/endpoints-json
+          delete-branch: true
+          commit-message: "chore: update endpoints.json"
+          title: "chore: update endpoints.json"
+          body: |
+            `sync.ts --apply` changed the endpoint IDs on Runpod.
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
