@@ -9,7 +9,7 @@
 
 [Quickstart](#quickstart) · [Why](#why-loorel) · [しくみ](#しくみ) · [リファレンス](#リファレンス) · [FAQ](#よくある質問) · [ロードマップ](#ロードマップ)
 
-`preview` · 実装 7 / 7（実 API での動作確認待ち）
+`preview` · 実装 8 / 8（実 API での動作確認待ち）
 
 </div>
 
@@ -255,16 +255,17 @@ GitHub Actions などの既存パイプラインには、承認済みの推論�
 
 1 ファイルが 1 エンドポイントです。書いていない項目は [defaults.yaml](#defaultsyaml) の値になります。
 
-| 項目                | 必須         | 既定値   | 意味                                                            |
-| ------------------- | ------------ | -------- | --------------------------------------------------------------- |
-| `name`              | 必須         | —        | エンドポイント名。小文字・数字・`-`。ファイル名と同じにする     |
-| `gpu.pools`         | 必須         | —        | GPU プール ID の一覧（例 `ADA_24`）。空きがあるプールで起動する |
-| `gpu.excludedTypes` | 任意         | `[]`     | プールから外す GPU の型（例 `NVIDIA L4`）                       |
-| `gpu.count`         | 任意         | `1`      | 1 ワーカーあたりの GPU 数                                       |
-| `workers.min`       | 必須         | —        | 常に起動しておく数。`0` なら待機中は課金なし                    |
-| `workers.max`       | 必須         | —        | 同時に起動する上限                                              |
-| `disk`              | 任意         | defaults | コンテナのディスク（GB）。モデルはここに落とす                  |
-| `vllm.*`            | `MODEL_NAME` | —        | vLLM worker の環境変数。`MODEL_NAME` は必須                     |
+| 項目                | 必須         | 既定値   | 意味                                                             |
+| ------------------- | ------------ | -------- | ---------------------------------------------------------------- |
+| `name`              | 必須         | —        | エンドポイント名。小文字・数字・`-`。ファイル名と同じにする      |
+| `gpu.pools`         | 必須         | —        | GPU プール ID の一覧（例 `ADA_24`）。空きがあるプールで起動する  |
+| `gpu.excludedTypes` | 任意         | `[]`     | プールから外す GPU の型（例 `NVIDIA L4`）                        |
+| `gpu.count`         | 任意         | `1`      | 1 ワーカーあたりの GPU 数                                        |
+| `workers.min`       | 必須         | —        | 常に起動しておく数。`0` なら待機中は課金なし                     |
+| `workers.max`       | 必須         | —        | 同時に起動する上限                                               |
+| `disk`              | 任意         | defaults | コンテナのディスク（GB）。モデルはここに落とす                   |
+| `vllm.*`            | `MODEL_NAME` | —        | vLLM worker の環境変数。`MODEL_NAME` は必須                      |
+| `secrets.*`         | 任意         | `{}`     | 環境変数名 → Runpod Secret の名前。[秘密の渡し方](#秘密の渡し方) |
 
 #### 環境変数の組み立て
 
@@ -274,9 +275,45 @@ GitHub Actions などの既存パイプラインには、承認済みの推論�
 flowchart LR
   D["defaults.env<br>GPU_MEMORY_UTILIZATION<br>MAX_CONCURRENCY"] --> M(("+"))
   V["vllm<br>MODEL_NAME<br>MAX_MODEL_LEN …"] --> M
+  S["secrets<br>HF_TOKEN → {{ RUNPOD_SECRET_… }}"] --> M
   N["name<br>→ OPENAI_SERVED_MODEL_NAME_OVERRIDE"] --> M
   M --> E["endpoint.env<br>PATCH では丸ごと置き換わる"]
 ```
+
+#### 秘密の渡し方
+
+gated モデルの `HF_TOKEN` などは、Runpod の Secret に置き、YAML には名前だけを書きます。値はリポジトリ・GitHub・PR コメントのどこにも出ません。
+
+```mermaid
+flowchart LR
+  S["Runpod コンソール<br>Secrets に hf-token を作成（1 回だけ）"] --> W
+  Y["models/*.yaml<br>secrets: { HF_TOKEN: hf-token }"] --> E["エンドポイントの env<br>HF_TOKEN = {{ RUNPOD_SECRET_hf-token }}"]
+  E --> W["worker の起動時に<br>Runpod が値を入れる"]
+```
+
+```yaml
+# models/llama-3-1-8b.yaml
+name: llama-3-1-8b
+gpu:
+  pools: [ADA_24]
+workers: { min: 0, max: 1 }
+vllm:
+  MODEL_NAME: meta-llama/Llama-3.1-8B-Instruct
+secrets:
+  HF_TOKEN: hf-token # Runpod Secret の名前
+```
+
+| 手順 | 内容                                                                                               |
+| ---- | -------------------------------------------------------------------------------------------------- |
+| 1    | Runpod コンソールの Secrets で `hf-token` を作る（値は Hugging Face の Read トークン）             |
+| 2    | YAML の `secrets` に `環境変数名: Secret 名` を書く                                                |
+| 3    | plan が Secret の存在を確かめる。ないときは止まる                                                  |
+| 4    | apply が env に `{{ RUNPOD_SECRET_hf-token }}` を入れる。Runpod が worker の起動時に値に置き換える |
+
+Secret の値を変えたときは、次に起動した worker から新しい値になります。YAML の変更や apply は要りません。
+
+> [!NOTE]
+> plan は `GET /v2/account/secrets` で Secret の名前の一覧を読みます（値は返りません）。キーにその権限がない場合、plan は警告を出して確認を省きます。
 
 ### defaults.yaml
 
@@ -337,14 +374,16 @@ RUNPOD_API_KEY=... pnpm apply --out apply.md
 
 plan が止める設定:
 
-| こうなっていたら                             | 理由                                                            |
-| -------------------------------------------- | --------------------------------------------------------------- |
-| 知らない GPU プール                          | Runpod のカタログ（`/v2/catalog/gpus`）にないものは起動できない |
-| プール外の `excludedTypes`、全部を外す指定   | Runpod が 400 を返す、または GPU が 0 種類になる                |
-| `TOKEN`・`SECRET`・`API_KEY` などを含む env  | 値が PR コメントに出てしまうため YAML には書かない              |
-| `MODEL_NAME` がない、`min` > `max`           | ワーカーが起動できない                                          |
-| 知らない項目名、ファイル名と `name` の不一致 | 書き間違いを早めに見つける                                      |
-| Runpod 側に同じ名前のエンドポイントが 2 つ   | どちらを更新するか決められない                                  |
+| こうなっていたら                                | 理由                                                            |
+| ----------------------------------------------- | --------------------------------------------------------------- |
+| 知らない GPU プール                             | Runpod のカタログ（`/v2/catalog/gpus`）にないものは起動できない |
+| プール外の `excludedTypes`、全部を外す指定      | Runpod が 400 を返す、または GPU が 0 種類になる                |
+| `TOKEN`・`SECRET`・`API_KEY` などを含む env     | 値が PR コメントに出てしまうため YAML には書かない              |
+| Runpod にない Secret 名を `secrets` で参照      | worker の起動時に値が入らない                                   |
+| 同じ環境変数を `vllm` と `secrets` の両方に書く | どちらの値を使うか決められない                                  |
+| `MODEL_NAME` がない、`min` > `max`              | ワーカーが起動できない                                          |
+| 知らない項目名、ファイル名と `name` の不一致    | 書き間違いを早めに見つける                                      |
+| Runpod 側に同じ名前のエンドポイントが 2 つ      | どちらを更新するか決められない                                  |
 
 終了コードは `0` が成功、`1` が設定または API のエラー、`2` が使い方の誤りです。Runpod 側の値でも、秘密らしい名前の env は `(hidden)` と表示します。
 
@@ -433,7 +472,7 @@ v2 では GPU をプール単位で選びます。特定の型だけにしたい
 <details>
 <summary><b>HF_TOKEN のような秘密はどこに置きますか</b></summary>
 
-今の版では YAML に書けません。値が PR コメントに出るのを防ぐためです。gated モデルを使うときは、GitHub Secrets から apply に渡す仕組みを足します（未実装）。
+値は Runpod の Secret に置き、YAML の `secrets` には Secret の名前だけを書きます。値を YAML に直接書くと PR コメントに出るため、plan が止めます。手順は[秘密の渡し方](#秘密の渡し方)にあります。
 
 </details>
 
@@ -457,6 +496,7 @@ Runpod の AI SDK provider は、モデル ID をそのまま vLLM へのリク�
 | 5   | GitHub Actions：PR で plan、main で apply                   | 🧪 actionlint 済み・初回実行待ち    |
 | 6   | `endpoints.json` の bot PR                                  | 🧪 actionlint 済み・初回実行待ち    |
 | 7   | `src/ai.ts`・`pnpm smoke`：SDK 推論と応答検証               | 🧪 モックで検証済み・実推論は未検証 |
+| 8   | gated モデルの秘密（Runpod Secret の参照）                  | 🧪 テスト 9 件・実 API 確認待ち     |
 
 ## 開発
 

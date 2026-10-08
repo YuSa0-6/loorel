@@ -307,3 +307,92 @@ describe("sync --apply", () => {
     },
   );
 });
+
+describe("secrets", () => {
+  const GATED = `${QWEN}secrets:\n  HF_TOKEN: hf-token\n`;
+  const REF = "{{ RUNPOD_SECRET_hf-token }}";
+  const secretLists = (runpod: FakeRunpod) =>
+    runpod.requests.filter((r) => r.path === "/v2/account/secrets");
+
+  test("a secret is referenced by name and the reference is shown in the plan", async () => {
+    const runpod = fakeRunpod([], { secrets: ["hf-token"] });
+    const { code, output } = await run(
+      await makeRepo({ "qwen3-8b.yaml": GATED }),
+      runpod,
+      "--plan",
+    );
+    expect(code).toBe(0);
+    expect(output).toContain(`+     env.HF_TOKEN: "${REF}"`);
+    expect(secretLists(runpod)).toHaveLength(1);
+  });
+
+  test("apply sends the reference, and the next plan has no changes", async () => {
+    const runpod = fakeRunpod([], { secrets: ["hf-token"] });
+    const root = await makeRepo({ "qwen3-8b.yaml": GATED });
+    expect((await run(root, runpod, "--apply")).code).toBe(0);
+    expect(runpod.endpoints[0]?.env?.HF_TOKEN).toBe(REF);
+    expect((await run(root, runpod, "--plan")).output).toContain("1 unchanged");
+  });
+
+  test("a secret that does not exist on Runpod stops the plan", async () => {
+    const runpod = fakeRunpod([], { secrets: ["other"] });
+    const { code, output } = await run(
+      await makeRepo({ "qwen3-8b.yaml": GATED }),
+      runpod,
+      "--plan",
+    );
+    expect(code).toBe(1);
+    expect(output).toContain('Runpod secret "hf-token" does not exist');
+  });
+
+  test("a key that may not list secrets gets a warning instead of an error", async () => {
+    const runpod = fakeRunpod([], { secrets: "forbidden" });
+    const { code, output } = await run(
+      await makeRepo({ "qwen3-8b.yaml": GATED }),
+      runpod,
+      "--plan",
+    );
+    expect(code).toBe(0);
+    expect(output).toContain("cannot list Runpod secrets");
+  });
+
+  test("models without secrets do not list them", async () => {
+    const runpod = fakeRunpod([], { secrets: "forbidden" });
+    const { code } = await run(await makeRepo({ "qwen3-8b.yaml": QWEN }), runpod, "--plan");
+    expect(code).toBe(0);
+    expect(secretLists(runpod)).toEqual([]);
+  });
+
+  test("a raw secret value on Runpod is replaced by the reference and stays hidden", async () => {
+    const remote = syncedQwen({ env: { ...syncedQwen().env, HF_TOKEN: "hf_secret" } });
+    const runpod = fakeRunpod([remote], { secrets: ["hf-token"] });
+    const { output } = await run(await makeRepo({ "qwen3-8b.yaml": GATED }), runpod, "--plan");
+    expect(output).toContain(`!     env.HF_TOKEN: (hidden) -> "${REF}"`);
+    expect(output).not.toContain("hf_secret");
+  });
+
+  test.each([
+    ["the reserved RUNPOD prefix", "RUNPOD_TOKEN", "the RUNPOD prefix is reserved"],
+    ["a name with spaces", "hf token", "Runpod secret names use"],
+  ])("%s is rejected", async (_, name, message) => {
+    const yaml = `${QWEN}secrets:\n  HF_TOKEN: "${name}"\n`;
+    const { code, output } = await run(
+      await makeRepo({ "qwen3-8b.yaml": yaml }),
+      fakeRunpod(),
+      "--plan",
+    );
+    expect(code).toBe(1);
+    expect(output).toContain(message);
+  });
+
+  test("an env var set in both vllm and secrets is rejected", async () => {
+    const yaml = `${QWEN}secrets:\n  MAX_MODEL_LEN: hf-token\n`;
+    const { code, output } = await run(
+      await makeRepo({ "qwen3-8b.yaml": yaml }),
+      fakeRunpod(),
+      "--plan",
+    );
+    expect(code).toBe(1);
+    expect(output).toContain("an env var is set in both vllm and secrets");
+  });
+});

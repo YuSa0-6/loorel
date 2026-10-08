@@ -23,6 +23,11 @@ export interface GpuType {
   pool: string | null;
 }
 
+/** An account secret as returned by GET /v2/account/secrets. The value is never returned. */
+export interface Secret {
+  name: string;
+}
+
 export class RunpodError extends Error {
   readonly status: number;
   constructor(status: number, message: string) {
@@ -34,6 +39,7 @@ export class RunpodError extends Error {
 export interface RunpodApi {
   listEndpoints(): Promise<RemoteEndpoint[]>;
   listGpuTypes(): Promise<GpuType[]>;
+  listSecrets(): Promise<Secret[]>;
   createEndpoint(spec: EndpointSpec): Promise<RemoteEndpoint>;
   updateEndpoint(id: string, patch: Record<string, unknown>): Promise<RemoteEndpoint>;
   deleteEndpoint(id: string): Promise<void>;
@@ -86,6 +92,9 @@ export function createRunpodApi(apiKey: string, fetchFn: typeof fetch = fetch): 
     },
     async listGpuTypes() {
       return (await call<{ gpus: GpuType[] }>("GET", "/catalog/gpus")).gpus;
+    },
+    async listSecrets() {
+      return (await call<{ secrets: Secret[] }>("GET", "/account/secrets")).secrets;
     },
     createEndpoint: (spec) => call("POST", "/serverless", spec),
     updateEndpoint: (id, patch) => call("PATCH", `/serverless/${encodeURIComponent(id)}`, patch),

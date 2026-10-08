@@ -10,7 +10,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { ConfigError, loadSpecs } from "./config.ts";
-import { type EndpointIds, makePlan, type Plan, PlanError, renderPlan } from "./plan.ts";
+import {
+  type EndpointIds,
+  makePlan,
+  type Plan,
+  PlanError,
+  referencedSecrets,
+  renderPlan,
+} from "./plan.ts";
 import { createRunpodApi, type RunpodApi, RunpodError } from "./runpod-api.ts";
 
 export interface SyncOptions {
@@ -73,12 +80,13 @@ export async function sync({
   try {
     const specs = await loadSpecs(root);
     const api = createRunpodApi(apiKey, fetchFn);
-    const [remote, gpuTypes, known] = await Promise.all([
+    const [remote, gpuTypes, known, secrets] = await Promise.all([
       api.listEndpoints(),
       api.listGpuTypes(),
       readEndpointIds(root),
+      referencedSecrets(specs).length > 0 ? listSecretNames(api) : [],
     ]);
-    const plan = makePlan(specs, remote, known, gpuTypes);
+    const plan = makePlan(specs, remote, known, gpuTypes, secrets);
     emit(renderPlan(plan, { prune: values.prune }));
     if (values.plan) {
       await save();
@@ -159,6 +167,16 @@ async function apply(plan: Plan, api: RunpodApi, prune: boolean): Promise<ApplyR
   }
   if (result.lines.length === 0) result.lines.push("nothing to change");
   return result;
+}
+
+/** null when the key is not allowed to list secrets. */
+async function listSecretNames(api: RunpodApi): Promise<string[] | null> {
+  try {
+    return (await api.listSecrets()).map((s) => s.name);
+  } catch (e) {
+    if (e instanceof RunpodError && e.status === 403) return null;
+    throw e;
+  }
 }
 
 async function readEndpointIds(root: string): Promise<EndpointIds> {
