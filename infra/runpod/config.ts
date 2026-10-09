@@ -25,13 +25,20 @@ export interface EndpointSpec {
 
 // Keys that look like credentials. Their values would show up in PR comments.
 export const SECRET_KEY = /TOKEN|SECRET|PASSWORD|API_KEY|CREDENTIAL/i;
+// An env value that Runpod replaces with an account secret when a worker boots.
+// The value itself never passes through this repository.
+export const SECRET_REF = /^\{\{ RUNPOD_SECRET_(.+) \}\}$/;
+export const secretRef = (name: string) => `{{ RUNPOD_SECRET_${name} }}`;
 // Set by sync so that the OpenAI-compatible route accepts the model name.
 const SERVED_NAME_KEY = "OPENAI_SERVED_MODEL_NAME_OVERRIDE";
 
 const EnvKey = v.pipe(
   v.string(),
   v.regex(/^[A-Z_][A-Z0-9_]*$/, "env var names are UPPER_SNAKE_CASE"),
-  v.check((k) => !SECRET_KEY.test(k), "secrets must not be written in YAML"),
+  v.check(
+    (k) => !SECRET_KEY.test(k),
+    "secrets must not be written in YAML; reference a Runpod secret under secrets:",
+  ),
   v.check((k) => k !== SERVED_NAME_KEY, `${SERVED_NAME_KEY} is set from name`),
 );
 const Env = v.record(
@@ -42,6 +49,21 @@ const Env = v.record(
   ),
 );
 const PositiveInt = v.pipe(v.number(), v.integer(), v.minValue(1));
+
+// env var name -> Runpod secret name. Names follow POST /v2/account/secrets.
+const Secrets = v.record(
+  v.pipe(
+    v.string(),
+    v.regex(/^[A-Z_][A-Z0-9_]*$/, "env var names are UPPER_SNAKE_CASE"),
+    v.check((k) => k !== SERVED_NAME_KEY, `${SERVED_NAME_KEY} is set from name`),
+  ),
+  v.pipe(
+    v.string(),
+    v.regex(/^[a-zA-Z_][a-zA-Z0-9_.\-/]*$/, "Runpod secret names use letters, digits and _.-/"),
+    v.maxLength(191),
+    v.check((n) => !/^RUNPOD/i.test(n), "the RUNPOD prefix is reserved by Runpod"),
+  ),
+);
 
 const Defaults = v.strictObject({
   image: v.pipe(v.string(), v.regex(/:[\w.-]+$/, "image must have an explicit tag")),
@@ -83,8 +105,13 @@ const Model = v.pipe(
         "vllm.MODEL_NAME is required",
       ),
     ),
+    secrets: v.optional(Secrets, {}),
   }),
   v.check((m) => m.workers.min <= m.workers.max, "workers.min must be <= workers.max"),
+  v.check(
+    (m) => Object.keys(m.secrets).every((k) => !(k in m.vllm)),
+    "an env var is set in both vllm and secrets",
+  ),
 );
 
 export class ConfigError extends Error {}
@@ -123,12 +150,15 @@ export async function loadSpecs(root: string): Promise<EndpointSpec[]> {
     if (path.parse(file).name !== model.name) {
       throw new ConfigError(`models/${file}: file name must be ${model.name}.yaml`);
     }
+    const refs = Object.fromEntries(
+      Object.entries(model.secrets).map(([k, name]) => [k, secretRef(name)]),
+    );
     specs.push({
       name: model.name,
       type: defaults.type,
       image: defaults.image,
       disk: model.disk ?? defaults.disk,
-      env: { ...defaults.env, ...model.vllm, [SERVED_NAME_KEY]: model.name },
+      env: { ...defaults.env, ...model.vllm, ...refs, [SERVED_NAME_KEY]: model.name },
       gpu: {
         pools: model.gpu.pools,
         excludedTypes: model.gpu.excludedTypes,

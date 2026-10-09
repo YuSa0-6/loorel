@@ -15,7 +15,16 @@ export const GPU_TYPES: GpuType[] = [
   { id: "NVIDIA GeForce RTX 3070", pool: null },
 ];
 
-export function fakeRunpod(endpoints: RemoteEndpoint[] = [], { pageSize = 2 } = {}): FakeRunpod {
+export interface FakeOptions {
+  pageSize?: number;
+  /** Account secret names, or "forbidden" for a key that may not list them. */
+  secrets?: string[] | "forbidden";
+}
+
+export function fakeRunpod(
+  endpoints: RemoteEndpoint[] = [],
+  { pageSize = 2, secrets = [] }: FakeOptions = {},
+): FakeRunpod {
   const state: FakeRunpod = {
     endpoints: structuredClone(endpoints),
     requests: [],
@@ -39,6 +48,11 @@ export function fakeRunpod(endpoints: RemoteEndpoint[] = [], { pageSize = 2 } = 
 
     const route = url.pathname.replace(/^\/v2/, "");
     if (method === "GET" && route === "/catalog/gpus") return json(200, { gpus: GPU_TYPES });
+    if (method === "GET" && route === "/account/secrets") {
+      if (secrets === "forbidden")
+        return json(403, { title: "Forbidden", status: 403, detail: "insufficient scope" });
+      return json(200, { secrets: secrets.map((name, i) => ({ id: `s${i}`, name })) });
+    }
     if (method === "GET" && route === "/serverless") {
       const start = Number(url.searchParams.get("cursor") ?? 0);
       const page = state.endpoints.slice(start, start + pageSize);

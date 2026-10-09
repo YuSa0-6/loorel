@@ -1,6 +1,6 @@
 // Compares models/*.yaml with the endpoints on Runpod and renders the result.
 import { isDeepStrictEqual } from "node:util";
-import { type EndpointSpec, SECRET_KEY } from "./config.ts";
+import { type EndpointSpec, SECRET_KEY, SECRET_REF } from "./config.ts";
 import type { GpuType, RemoteEndpoint } from "./runpod-api.ts";
 
 export interface Change {
@@ -26,13 +26,32 @@ export type EndpointIds = Record<string, { id: string }>;
 
 export class PlanError extends Error {}
 
+/** Runpod secret names referenced from env values, sorted. */
+export function referencedSecrets(specs: EndpointSpec[]): string[] {
+  const names = specs.flatMap((s) =>
+    Object.values(s.env).flatMap((value) => SECRET_REF.exec(value)?.[1] ?? []),
+  );
+  return [...new Set(names)].sort();
+}
+
+/**
+ * `secrets` holds the account's secret names, or null when the key may not list them
+ * (the plan then warns instead of checking).
+ */
 export function makePlan(
   specs: EndpointSpec[],
   remote: RemoteEndpoint[],
   known: EndpointIds,
   gpuTypes: GpuType[],
+  secrets: string[] | null = [],
 ): Plan {
   const errors = specs.flatMap((s) => checkGpu(s, gpuTypes));
+  const missing = secrets && referencedSecrets(specs).filter((n) => !secrets.includes(n));
+  for (const name of missing ?? []) {
+    errors.push(
+      `Runpod secret "${name}" does not exist; create it in the Runpod console (Secrets) first`,
+    );
+  }
   const byName = Map.groupBy(remote, (r) => r.name);
   for (const s of specs) {
     const same = byName.get(s.name) ?? [];
@@ -66,6 +85,9 @@ export function makePlan(
   const warnings = specs
     .filter((s) => s.workers.min > 0)
     .map((s) => `${s.name}: workers.min=${s.workers.min} keeps GPUs running and billed while idle`);
+  if (secrets === null && referencedSecrets(specs).length > 0) {
+    warnings.push("the API key cannot list Runpod secrets, so their existence was not checked");
+  }
   return { actions, warnings };
 }
 
@@ -140,6 +162,8 @@ function diff(
 
 function show(field: string, value: unknown): string {
   if (value === undefined) return "(none)";
+  // A secret reference is a name, not a value, so it is safe to show.
+  if (typeof value === "string" && SECRET_REF.test(value)) return JSON.stringify(value);
   if (field.startsWith("env.") && SECRET_KEY.test(field)) return "(hidden)";
   return JSON.stringify(value);
 }
