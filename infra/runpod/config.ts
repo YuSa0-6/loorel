@@ -41,17 +41,17 @@ const EnvKey = v.pipe(
   ),
   v.check((k) => k !== SERVED_NAME_KEY, `${SERVED_NAME_KEY} is set from name`),
 );
-const Env = v.record(
+export const Env = v.record(
   EnvKey,
   v.pipe(
     v.union([v.string(), v.number(), v.boolean()]),
     v.transform((x) => String(x)),
   ),
 );
-const PositiveInt = v.pipe(v.number(), v.integer(), v.minValue(1));
+export const PositiveInt = v.pipe(v.number(), v.integer(), v.minValue(1));
 
 // env var name -> Runpod secret name. Names follow POST /v2/account/secrets.
-const Secrets = v.record(
+export const Secrets = v.record(
   v.pipe(
     v.string(),
     v.regex(/^[A-Z_][A-Z0-9_]*$/, "env var names are UPPER_SNAKE_CASE"),
@@ -65,7 +65,7 @@ const Secrets = v.record(
   ),
 );
 
-const Defaults = v.strictObject({
+export const Defaults = v.strictObject({
   image: v.pipe(v.string(), v.regex(/:[\w.-]+$/, "image must have an explicit tag")),
   type: v.picklist(["QUEUE", "LOAD_BALANCER"]),
   disk: PositiveInt,
@@ -82,19 +82,23 @@ const Defaults = v.strictObject({
   env: v.optional(Env, {}),
 });
 
-const Model = v.pipe(
+export const Name = v.pipe(
+  v.string(),
+  v.regex(/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/, "name is lowercase a-z, 0-9 and -"),
+);
+export const Gpu = v.strictObject({
+  pools: v.pipe(v.array(v.string()), v.minLength(1)),
+  excludedTypes: v.optional(v.array(v.string()), []),
+  count: v.optional(PositiveInt, 1),
+});
+export const WorkerCount = v.pipe(v.number(), v.integer(), v.minValue(0));
+
+export const Model = v.pipe(
   v.strictObject({
-    name: v.pipe(
-      v.string(),
-      v.regex(/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/, "name is lowercase a-z, 0-9 and -"),
-    ),
-    gpu: v.strictObject({
-      pools: v.pipe(v.array(v.string()), v.minLength(1)),
-      excludedTypes: v.optional(v.array(v.string()), []),
-      count: v.optional(PositiveInt, 1),
-    }),
+    name: Name,
+    gpu: Gpu,
     workers: v.strictObject({
-      min: v.pipe(v.number(), v.integer(), v.minValue(0)),
+      min: WorkerCount,
       max: PositiveInt,
     }),
     disk: v.optional(PositiveInt),
@@ -128,12 +132,21 @@ async function readYaml<T>(
   } catch (e) {
     throw new ConfigError(`${rel}: ${(e as Error).message}`);
   }
+  return parseConfig(schema, raw, rel);
+}
+
+/** Validates raw config, or throws a ConfigError that lists every issue under label. */
+export function parseConfig<T>(
+  schema: v.GenericSchema<unknown, T>,
+  raw: unknown,
+  label: string,
+): T {
   const result = v.safeParse(schema, raw);
   if (!result.success) {
     const issues = result.issues
       .map((i) => `  ${v.getDotPath(i) ?? "(root)"}: ${i.message}`)
       .join("\n");
-    throw new ConfigError(`${rel}:\n${issues}`);
+    throw new ConfigError(`${label}:\n${issues}`);
   }
   return result.output;
 }
@@ -150,32 +163,40 @@ export async function loadSpecs(root: string): Promise<EndpointSpec[]> {
     if (path.parse(file).name !== model.name) {
       throw new ConfigError(`models/${file}: file name must be ${model.name}.yaml`);
     }
-    const refs = Object.fromEntries(
-      Object.entries(model.secrets).map(([k, name]) => [k, secretRef(name)]),
-    );
-    specs.push({
-      name: model.name,
-      type: defaults.type,
-      image: defaults.image,
-      disk: model.disk ?? defaults.disk,
-      env: { ...defaults.env, ...model.vllm, ...refs, [SERVED_NAME_KEY]: model.name },
-      gpu: {
-        pools: model.gpu.pools,
-        excludedTypes: model.gpu.excludedTypes,
-        count: model.gpu.count,
-      },
-      workers: {
-        min: model.workers.min,
-        max: model.workers.max,
-        // The API rejects idleTimeout for queue endpoints that scale on request count.
-        ...(defaults.type === "QUEUE" && defaults.scaling.type === "REQUEST_COUNT"
-          ? {}
-          : { idleTimeout: defaults.idleTimeout }),
-      },
-      scaling: defaults.scaling,
-      timeout: defaults.timeout,
-      flashboot: defaults.flashboot,
-    });
+    specs.push(modelToSpec(defaults, model));
   }
   return specs;
+}
+
+/** Merges one validated model with the shared defaults into a full endpoint spec. */
+export function modelToSpec(
+  defaults: v.InferOutput<typeof Defaults>,
+  model: v.InferOutput<typeof Model>,
+): EndpointSpec {
+  const refs = Object.fromEntries(
+    Object.entries(model.secrets).map(([k, name]) => [k, secretRef(name)]),
+  );
+  return {
+    name: model.name,
+    type: defaults.type,
+    image: defaults.image,
+    disk: model.disk ?? defaults.disk,
+    env: { ...defaults.env, ...model.vllm, ...refs, [SERVED_NAME_KEY]: model.name },
+    gpu: {
+      pools: model.gpu.pools,
+      excludedTypes: model.gpu.excludedTypes,
+      count: model.gpu.count,
+    },
+    workers: {
+      min: model.workers.min,
+      max: model.workers.max,
+      // The API rejects idleTimeout for queue endpoints that scale on request count.
+      ...(defaults.type === "QUEUE" && defaults.scaling.type === "REQUEST_COUNT"
+        ? {}
+        : { idleTimeout: defaults.idleTimeout }),
+    },
+    scaling: defaults.scaling,
+    timeout: defaults.timeout,
+    flashboot: defaults.flashboot,
+  };
 }
