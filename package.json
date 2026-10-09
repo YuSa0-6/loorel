@@ -1,22 +1,17 @@
 {
-  "name": "loorel",
+  "name": "loorel-workspace",
   "private": true,
   "type": "module",
-  "exports": {
-    "./config": "./infra/runpod/define.ts"
-  },
   "scripts": {
     "prepare": "vp config",
     "check": "vp check",
     "test": "vp test run",
-    "plan": "node infra/runpod/sync.ts --plan",
-    "apply": "node infra/runpod/sync.ts --apply",
-    "smoke": "node infra/runpod/smoke.ts"
+    "plan": "node packages/loorel/src/sync.ts --plan",
+    "apply": "node packages/loorel/src/sync.ts --apply",
+    "smoke": "node packages/loorel/src/smoke.ts"
   },
   "dependencies": {
-    "@runpod/ai-sdk-provider": "1.4.0",
-    "ai": "^6",
-    "valibot": "^1.5.0"
+    "loorel": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "22",

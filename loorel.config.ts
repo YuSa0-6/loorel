@@ -1,11 +1,11 @@
-// Runpod Serverless endpoints, synced by `pnpm plan` / `pnpm apply`.
-// A model (models/*.ts) is what is served; an endpoint is where and how it runs.
-import { defineConfig, defineEndpoint } from "loorel/config";
-import qwen3_8b from "./models/qwen3-8b.ts";
+// Settings every endpoint starts from. Each endpoint is a directory under endpoints/:
+//   endpoints/<name>/model.config.ts     what is served (defineModel)
+//   endpoints/<name>/endpoint.config.ts  where and how it runs (defineEndpoint)
+// Runpod templates are not used: in REST API v2 a template is copied into the
+// endpoint once and never linked again, so the repository holds the shared settings.
+import { defineConfig } from "loorel";
 
 export default defineConfig({
-  // Settings every endpoint starts from. Runpod templates are not used: in REST API v2
-  // a template is copied into the endpoint once and never linked again.
   defaults: {
     // Pin an exact tag. Releases: https://github.com/runpod-workers/worker-vllm/releases
     image: "runpod/worker-v1-vllm:v2.27.2",
@@ -21,12 +21,4 @@ export default defineConfig({
       MAX_CONCURRENCY: 30,
     },
   },
-
-  endpoints: [
-    defineEndpoint({
-      model: qwen3_8b,
-      gpu: { pools: ["ADA_24"], count: 1 },
-      workers: { min: 0, max: 2 },
-    }),
-  ],
 });

@@ -1,7 +1,8 @@
-// Syncs the endpoints in loorel.config.ts to Runpod Serverless.
+// Syncs endpoints/<name>/endpoint.config.ts to Runpod Serverless endpoints.
+// Run from the project root (the directory with loorel.config.ts):
 //
-//   node infra/runpod/sync.ts --plan  [--out plan.md]
-//   node infra/runpod/sync.ts --apply [--prune] [--out apply.md]
+//   node packages/loorel/src/sync.ts --plan  [--out plan.md]
+//   node packages/loorel/src/sync.ts --apply [--prune] [--out apply.md]
 //
 // Requires RUNPOD_API_KEY (a Read Only key is enough for --plan).
 // --apply writes endpoints.json: endpoint name -> endpoint ID.
@@ -194,6 +195,9 @@ async function writeEndpointIds(root: string, ids: EndpointIds): Promise<void> {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-  process.exitCode = await sync({ argv: process.argv.slice(2), root, env: process.env });
+  process.exitCode = await sync({
+    argv: process.argv.slice(2),
+    root: process.cwd(),
+    env: process.env,
+  });
 }

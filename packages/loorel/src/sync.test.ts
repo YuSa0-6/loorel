@@ -8,8 +8,11 @@ import type { RemoteEndpoint } from "./runpod-api.ts";
 import { sync } from "./sync.ts";
 import { type FakeRunpod, fakeRunpod } from "./testing/fake-runpod.ts";
 
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const DEFINE_URL = pathToFileURL(path.join(REPO_ROOT, "infra/runpod/define.ts")).href;
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+// Temporary repositories have no node_modules, so they import "loorel" by file URL.
+const LOOREL = JSON.stringify(
+  pathToFileURL(path.join(REPO_ROOT, "packages/loorel/src/define.ts")).href,
+);
 
 const DEFAULTS: Defaults = {
   image: "runpod/worker-v1-vllm:v1.0.0",
@@ -60,20 +63,26 @@ function syncedQwen(overrides: Partial<RemoteEndpoint> = {}): RemoteEndpoint {
   };
 }
 
-/** A repository whose loorel.config.ts declares `endpoints`. */
-async function makeRepo(endpoints: unknown[], endpointsJson?: unknown): Promise<string> {
-  const config = JSON.stringify({ defaults: DEFAULTS, endpoints }, null, 2);
-  return makeRepoWithConfig(
-    `import { defineConfig } from ${JSON.stringify(DEFINE_URL)};\n` +
-      `export default defineConfig(${config});\n`,
-    endpointsJson,
-  );
+const CONFIG = `import { defineConfig } from ${LOOREL};
+export default defineConfig({ defaults: ${JSON.stringify(DEFAULTS)} });
+`;
+const endpointFile = (endpoint: unknown) =>
+  `import { defineEndpoint } from ${LOOREL};\nexport default defineEndpoint(${JSON.stringify(endpoint)});\n`;
+
+/** A repository with loorel.config.ts and one endpoints/<name>/ directory per entry. */
+async function makeRepo(endpoints: Record<string, unknown>, endpointsJson?: unknown) {
+  const files: Record<string, string> = { "loorel.config.ts": CONFIG };
+  for (const [name, endpoint] of Object.entries(endpoints))
+    files[`endpoints/${name}/endpoint.config.ts`] = endpointFile(endpoint);
+  return makeRepoWithFiles(files, endpointsJson);
 }
 
-async function makeRepoWithConfig(source: string | null, endpointsJson?: unknown) {
+async function makeRepoWithFiles(files: Record<string, string>, endpointsJson?: unknown) {
   const root = await mkdtemp(path.join(tmpdir(), "loorel-"));
-  await mkdir(root, { recursive: true });
-  if (source !== null) await writeFile(path.join(root, "loorel.config.ts"), source);
+  for (const [file, body] of Object.entries(files)) {
+    await mkdir(path.dirname(path.join(root, file)), { recursive: true });
+    await writeFile(path.join(root, file), body);
+  }
   if (endpointsJson)
     await writeFile(path.join(root, "endpoints.json"), JSON.stringify(endpointsJson));
   return root;
@@ -94,7 +103,7 @@ async function run(root: string, runpod: FakeRunpod, ...argv: string[]) {
 const writes = (runpod: FakeRunpod) => runpod.requests.filter((r) => r.method !== "GET");
 
 describe("sync --plan", () => {
-  test("the repository's own loorel.config.ts and models/ are valid", async () => {
+  test("the repository's own loorel.config.ts and endpoints/ are valid", async () => {
     const runpod = fakeRunpod();
     const { code, output } = await run(REPO_ROOT, runpod, "--plan");
     expect(output).toContain("+ create qwen3-8b");
@@ -103,7 +112,7 @@ describe("sync --plan", () => {
 
   test("a new model is shown as create and nothing is written", async () => {
     const runpod = fakeRunpod();
-    const { code, output } = await run(await makeRepo([QWEN]), runpod, "--plan");
+    const { code, output } = await run(await makeRepo({ "qwen3-8b": QWEN }), runpod, "--plan");
     expect(code).toBe(0);
     expect(output).toContain("**1 to create, 0 to update, 0 unchanged");
     expect(output).toContain('+     env.OPENAI_SERVED_MODEL_NAME_OVERRIDE: "qwen3-8b"');
@@ -112,7 +121,7 @@ describe("sync --plan", () => {
 
   test("an endpoint that matches its definition has no changes", async () => {
     const runpod = fakeRunpod([syncedQwen()]);
-    const { code, output } = await run(await makeRepo([QWEN]), runpod, "--plan");
+    const { code, output } = await run(await makeRepo({ "qwen3-8b": QWEN }), runpod, "--plan");
     expect(code).toBe(0);
     expect(output).toContain("0 to create, 0 to update, 1 unchanged");
   });
@@ -123,7 +132,7 @@ describe("sync --plan", () => {
       env: { ...syncedQwen().env, MAX_MODEL_LEN: "4096", HF_TOKEN: "hf_secret" },
     });
     const runpod = fakeRunpod([remote]);
-    const { code, output } = await run(await makeRepo([QWEN]), runpod, "--plan");
+    const { code, output } = await run(await makeRepo({ "qwen3-8b": QWEN }), runpod, "--plan");
     expect(code).toBe(0);
     expect(output).toContain("! update qwen3-8b (ep-qwen)");
     expect(output).toContain('!     env.MAX_MODEL_LEN: "4096" -> "8192"');
@@ -137,23 +146,23 @@ describe("sync --plan", () => {
   test("endpoints on other pages of the list are found", async () => {
     const others = [1, 2, 3].map((i) => syncedQwen({ id: `other${i}`, name: `other-${i}` }));
     const runpod = fakeRunpod([...others, syncedQwen()], { pageSize: 2 });
-    const { output } = await run(await makeRepo([QWEN]), runpod, "--plan");
+    const { output } = await run(await makeRepo({ "qwen3-8b": QWEN }), runpod, "--plan");
     expect(output).toContain("1 unchanged");
   });
 
-  test("an endpoint removed from the config is reported but not deleted", async () => {
+  test("an endpoint whose directory was removed is reported but not deleted", async () => {
     const runpod = fakeRunpod([syncedQwen()]);
-    const root = await makeRepo([], { "qwen3-8b": { id: "ep-qwen" } });
+    const root = await makeRepo({}, { "qwen3-8b": { id: "ep-qwen" } });
     const { code, output } = await run(root, runpod, "--plan");
     expect(code).toBe(0);
     expect(output).toContain(
-      "- qwen3-8b (ep-qwen): removed from loorel.config.ts; not deleted unless apply runs with --prune",
+      "- qwen3-8b (ep-qwen): endpoints/qwen3-8b/ removed; not deleted unless apply runs with --prune",
     );
   });
 
   test("two Runpod endpoints with the same name stop the plan", async () => {
     const runpod = fakeRunpod([syncedQwen(), syncedQwen({ id: "ep-dup" })]);
-    const { code, output } = await run(await makeRepo([QWEN]), runpod, "--plan");
+    const { code, output } = await run(await makeRepo({ "qwen3-8b": QWEN }), runpod, "--plan");
     expect(code).toBe(1);
     expect(output).toContain("2 endpoints on Runpod share this name (ep-qwen, ep-dup)");
   });
@@ -178,7 +187,7 @@ describe("sync --plan", () => {
       qwen((e) => {
         e.model.vllm = { HF_TOKEN: "hf_x" };
       }),
-      "endpoints[0] (qwen3-8b) model.vllm.HF_TOKEN: secret values must not be written in the config",
+      "endpoints/qwen3-8b/endpoint.config.ts:\n  model.vllm.HF_TOKEN: secret values must not be written in the config",
     ],
     [
       "a missing source",
@@ -209,29 +218,29 @@ describe("sync --plan", () => {
       }),
       "worker",
     ],
-    [
-      "an invalid endpoint name",
-      qwen((e) => {
-        e.name = "Qwen_8B";
-      }),
-      "endpoints[0] (Qwen_8B) name: names are lowercase a-z, 0-9 and -",
-    ],
   ])("%s is rejected", async (_, endpoint, message) => {
     const runpod = fakeRunpod();
-    const { code, output } = await run(await makeRepo([endpoint]), runpod, "--plan");
+    const { code, output } = await run(await makeRepo({ "qwen3-8b": endpoint }), runpod, "--plan");
     expect(code).toBe(1);
     expect(output).toContain(message);
     expect(writes(runpod)).toEqual([]);
   });
 
-  test("one model can run on two endpoints with different names", async () => {
+  test("one model can run on two endpoints, imported from the other directory", async () => {
     const runpod = fakeRunpod();
-    const big = qwen((e) => {
-      e.name = "qwen3-8b-a100";
-      e.gpu = { pools: ["AMPERE_80"] };
-      e.idleTimeout = 60;
+    const root = await makeRepoWithFiles({
+      "loorel.config.ts": CONFIG,
+      "endpoints/qwen3-8b/model.config.ts": `export default ${JSON.stringify(QWEN.model)};\n`,
+      "endpoints/qwen3-8b/endpoint.config.ts": `import { defineEndpoint } from ${LOOREL};
+import model from "./model.config.ts";
+export default defineEndpoint({ model, gpu: { pools: ["ADA_24"], count: 1 }, workers: { min: 0, max: 2 } });
+`,
+      "endpoints/qwen3-8b-a100/endpoint.config.ts": `import { defineEndpoint } from ${LOOREL};
+import model from "../qwen3-8b/model.config.ts";
+export default defineEndpoint({ model, gpu: { pools: ["AMPERE_80"] }, workers: { min: 0, max: 2 }, idleTimeout: 60 });
+`,
     });
-    const { code, output } = await run(await makeRepo([QWEN, big]), runpod, "--plan");
+    const { code, output } = await run(root, runpod, "--plan");
     expect(code).toBe(0);
     expect(output).toContain("**2 to create");
     expect(output).toContain("+ create qwen3-8b-a100");
@@ -240,32 +249,73 @@ describe("sync --plan", () => {
     expect(output.match(/OPENAI_SERVED_MODEL_NAME_OVERRIDE: "qwen3-8b"/g)).toHaveLength(2);
   });
 
-  test("two endpoints with the same name are rejected", async () => {
-    const { code, output } = await run(await makeRepo([QWEN, qwen()]), fakeRunpod(), "--plan");
-    expect(code).toBe(1);
-    expect(output).toContain("two endpoints are named qwen3-8b");
+  test("directories starting with _ hold shared code and are not endpoints", async () => {
+    const root = await makeRepoWithFiles({
+      "loorel.config.ts": CONFIG,
+      "endpoints/_shared/qwen.ts": `export default ${JSON.stringify(QWEN.model)};\n`,
+      "endpoints/qwen3-8b/endpoint.config.ts": `import { defineEndpoint } from ${LOOREL};
+import model from "../_shared/qwen.ts";
+export default defineEndpoint({ ...${JSON.stringify(QWEN)}, model });
+`,
+      "endpoints/README.md": "plain files are ignored\n",
+    });
+    const { code, output } = await run(root, fakeRunpod([syncedQwen()]), "--plan");
+    expect(code).toBe(0);
+    expect(output).toContain("0 to create, 0 to update, 1 unchanged");
   });
 
   test("an env var set to undefined is left out", async () => {
-    const config = `import { defineConfig } from ${JSON.stringify(DEFINE_URL)};
-export default defineConfig({
-  defaults: ${JSON.stringify(DEFAULTS)},
-  endpoints: [{ ...${JSON.stringify(QWEN)}, model: { ...${JSON.stringify(QWEN.model)}, vllm: { MAX_MODEL_LEN: 8192, DTYPE: undefined } } }],
-});
-`;
-    const runpod = fakeRunpod([syncedQwen()]);
-    const { code, output } = await run(await makeRepoWithConfig(config), runpod, "--plan");
+    const root = await makeRepoWithFiles({
+      "loorel.config.ts": CONFIG,
+      "endpoints/qwen3-8b/endpoint.config.ts": `export default {
+  ...${JSON.stringify(QWEN)},
+  model: { ...${JSON.stringify(QWEN.model)}, vllm: { MAX_MODEL_LEN: 8192, DTYPE: undefined } },
+};
+`,
+    });
+    const { code, output } = await run(root, fakeRunpod([syncedQwen()]), "--plan");
     expect(code).toBe(0);
     expect(output).toContain("1 unchanged");
   });
 
   test.each([
-    ["a missing config", null, "loorel.config.ts not found"],
-    ["a config without a default export", "export const x = 1;\n", "it has no default export"],
-    ["a config that throws", 'throw new Error("boom");\n', "loorel.config.ts: boom"],
-  ])("%s is a config error", async (_, source, message) => {
+    ["a missing loorel.config.ts", {}, "loorel.config.ts not found"],
+    [
+      "a config without a default export",
+      { "loorel.config.ts": "export const x = 1;\n" },
+      "loorel.config.ts: it has no default export",
+    ],
+    [
+      "a config that throws",
+      {
+        "loorel.config.ts": CONFIG,
+        "endpoints/qwen3-8b/endpoint.config.ts": 'throw new Error("boom");\n',
+      },
+      "endpoints/qwen3-8b/endpoint.config.ts: boom",
+    ],
+    [
+      "a directory without endpoint.config.ts",
+      {
+        "loorel.config.ts": CONFIG,
+        "endpoints/qwen3-8b/endpont.config.ts": "export default {};\n",
+      },
+      "endpoints/qwen3-8b: endpoint.config.ts not found",
+    ],
+    [
+      "a directory name that cannot be an endpoint name",
+      { "loorel.config.ts": CONFIG, "endpoints/Qwen_8B/endpoint.config.ts": endpointFile(QWEN) },
+      "endpoints/Qwen_8B: names are lowercase a-z, 0-9 and - (the directory name is the endpoint name)",
+    ],
+    [
+      "an unknown field in loorel.config.ts",
+      {
+        "loorel.config.ts": `export default { defaults: ${JSON.stringify(DEFAULTS)}, endpoints: [] };\n`,
+      },
+      "loorel.config.ts:\n  endpoints:",
+    ],
+  ])("%s is a config error", async (_, files, message) => {
     const runpod = fakeRunpod();
-    const { code, output } = await run(await makeRepoWithConfig(source), runpod, "--plan");
+    const { code, output } = await run(await makeRepoWithFiles(files), runpod, "--plan");
     expect(code).toBe(1);
     expect(output).toContain(message);
     expect(runpod.requests).toEqual([]);
@@ -274,7 +324,7 @@ export default defineConfig({
   test("Runpod errors are reported without a stack trace", async () => {
     const runpod = fakeRunpod();
     const lines: string[] = [];
-    const root = await makeRepo([QWEN]);
+    const root = await makeRepo({ "qwen3-8b": QWEN });
     const code = await sync({
       argv: ["--plan"],
       root,
@@ -308,7 +358,7 @@ function rejectCreate(runpod: FakeRunpod, name: string): FakeRunpod {
 describe("sync --apply", () => {
   test("a new model is created, recorded, and the next plan has no changes", async () => {
     const runpod = fakeRunpod();
-    const root = await makeRepo([QWEN]);
+    const root = await makeRepo({ "qwen3-8b": QWEN });
     const { code, output } = await run(root, runpod, "--apply");
     expect(code).toBe(0);
     expect(output).toContain("- qwen3-8b: created (ep1)");
@@ -323,7 +373,7 @@ describe("sync --apply", () => {
 
   test("an update sends only the changed fields", async () => {
     const runpod = fakeRunpod([syncedQwen({ workers: { min: 0, max: 1, idleTimeout: 5 } })]);
-    const root = await makeRepo([QWEN]);
+    const root = await makeRepo({ "qwen3-8b": QWEN });
     const { code, output } = await run(root, runpod, "--apply");
     expect(code).toBe(0);
     expect(output).toContain("- qwen3-8b: updated (ep-qwen)");
@@ -340,15 +390,15 @@ describe("sync --apply", () => {
 
   test("no changes means no writes to Runpod", async () => {
     const runpod = fakeRunpod([syncedQwen()]);
-    const { code, output } = await run(await makeRepo([QWEN]), runpod, "--apply");
+    const { code, output } = await run(await makeRepo({ "qwen3-8b": QWEN }), runpod, "--apply");
     expect(code).toBe(0);
     expect(output).toContain("- nothing to change");
     expect(writes(runpod)).toEqual([]);
   });
 
-  test("an endpoint removed from the config stays, and stays recorded, without --prune", async () => {
+  test("an endpoint whose directory was removed stays, and stays recorded, without --prune", async () => {
     const runpod = fakeRunpod([syncedQwen()]);
-    const root = await makeRepo([], { "qwen3-8b": { id: "ep-qwen" } });
+    const root = await makeRepo({}, { "qwen3-8b": { id: "ep-qwen" } });
     const { code } = await run(root, runpod, "--apply");
     expect(code).toBe(0);
     expect(writes(runpod)).toEqual([]);
@@ -358,7 +408,7 @@ describe("sync --apply", () => {
   test("--prune deletes it and removes it from endpoints.json", async () => {
     const other = syncedQwen({ id: "ep-manual", name: "manual" });
     const runpod = fakeRunpod([syncedQwen(), other]);
-    const root = await makeRepo([], { "qwen3-8b": { id: "ep-qwen" }, gone: { id: "ep-gone" } });
+    const root = await makeRepo({}, { "qwen3-8b": { id: "ep-qwen" }, gone: { id: "ep-gone" } });
     const { code, output } = await run(root, runpod, "--apply", "--prune");
     expect(code).toBe(0);
     expect(output).toContain("- delete qwen3-8b (ep-qwen)");
@@ -373,12 +423,7 @@ describe("sync --apply", () => {
       fakeRunpod([syncedQwen({ workers: { min: 0, max: 1, idleTimeout: 5 } })]),
       "aaa",
     );
-    const root = await makeRepo([
-      QWEN,
-      qwen((e) => {
-        e.name = "aaa";
-      }),
-    ]);
+    const root = await makeRepo({ aaa: QWEN, "qwen3-8b": QWEN });
     const { code, output } = await run(root, runpod, "--apply", "--out", "apply.md");
     expect(code).toBe(1);
     expect(output).toContain("- aaa: failed: POST /serverless -> 422 Unprocessable: bad");
@@ -392,7 +437,7 @@ describe("sync --apply", () => {
     "%j is a usage error",
     async (argv) => {
       const runpod = fakeRunpod();
-      const { code, output } = await run(await makeRepo([QWEN]), runpod, ...argv);
+      const { code, output } = await run(await makeRepo({ "qwen3-8b": QWEN }), runpod, ...argv);
       expect(code).toBe(2);
       expect(output).toContain("usage:");
       expect(runpod.requests).toEqual([]);
@@ -407,7 +452,7 @@ describe("secrets", () => {
 
   test("a secret is referenced by name and the reference is shown in the plan", async () => {
     const runpod = fakeRunpod([], { secrets: ["hf-token"] });
-    const { code, output } = await run(await makeRepo([GATED]), runpod, "--plan");
+    const { code, output } = await run(await makeRepo({ "qwen3-8b": GATED }), runpod, "--plan");
     expect(code).toBe(0);
     expect(output).toContain(`+     env.HF_TOKEN: "${REF}"`);
     expect(secretLists(runpod)).toHaveLength(1);
@@ -415,7 +460,7 @@ describe("secrets", () => {
 
   test("apply sends the reference, and the next plan has no changes", async () => {
     const runpod = fakeRunpod([], { secrets: ["hf-token"] });
-    const root = await makeRepo([GATED]);
+    const root = await makeRepo({ "qwen3-8b": GATED });
     expect((await run(root, runpod, "--apply")).code).toBe(0);
     expect(runpod.endpoints[0]?.env?.HF_TOKEN).toBe(REF);
     expect((await run(root, runpod, "--plan")).output).toContain("1 unchanged");
@@ -423,21 +468,21 @@ describe("secrets", () => {
 
   test("a secret that does not exist on Runpod stops the plan", async () => {
     const runpod = fakeRunpod([], { secrets: ["other"] });
-    const { code, output } = await run(await makeRepo([GATED]), runpod, "--plan");
+    const { code, output } = await run(await makeRepo({ "qwen3-8b": GATED }), runpod, "--plan");
     expect(code).toBe(1);
     expect(output).toContain('Runpod secret "hf-token" does not exist');
   });
 
   test("a key that may not list secrets gets a warning instead of an error", async () => {
     const runpod = fakeRunpod([], { secrets: "forbidden" });
-    const { code, output } = await run(await makeRepo([GATED]), runpod, "--plan");
+    const { code, output } = await run(await makeRepo({ "qwen3-8b": GATED }), runpod, "--plan");
     expect(code).toBe(0);
     expect(output).toContain("cannot list Runpod secrets");
   });
 
   test("models without secrets do not list them", async () => {
     const runpod = fakeRunpod([], { secrets: "forbidden" });
-    const { code } = await run(await makeRepo([QWEN]), runpod, "--plan");
+    const { code } = await run(await makeRepo({ "qwen3-8b": QWEN }), runpod, "--plan");
     expect(code).toBe(0);
     expect(secretLists(runpod)).toEqual([]);
   });
@@ -445,7 +490,7 @@ describe("secrets", () => {
   test("a raw secret value on Runpod is replaced by the reference and stays hidden", async () => {
     const remote = syncedQwen({ env: { ...syncedQwen().env, HF_TOKEN: "hf_secret" } });
     const runpod = fakeRunpod([remote], { secrets: ["hf-token"] });
-    const { output } = await run(await makeRepo([GATED]), runpod, "--plan");
+    const { output } = await run(await makeRepo({ "qwen3-8b": GATED }), runpod, "--plan");
     expect(output).toContain(`!     env.HF_TOKEN: (hidden) -> "${REF}"`);
     expect(output).not.toContain("hf_secret");
   });
@@ -457,7 +502,11 @@ describe("secrets", () => {
     const endpoint = qwen((e) => {
       e.model.secrets = { HF_TOKEN: name };
     });
-    const { code, output } = await run(await makeRepo([endpoint]), fakeRunpod(), "--plan");
+    const { code, output } = await run(
+      await makeRepo({ "qwen3-8b": endpoint }),
+      fakeRunpod(),
+      "--plan",
+    );
     expect(code).toBe(1);
     expect(output).toContain(message);
   });
@@ -466,7 +515,11 @@ describe("secrets", () => {
     const endpoint = qwen((e) => {
       e.model.secrets = { MAX_MODEL_LEN: "hf-token" };
     });
-    const { code, output } = await run(await makeRepo([endpoint]), fakeRunpod(), "--plan");
+    const { code, output } = await run(
+      await makeRepo({ "qwen3-8b": endpoint }),
+      fakeRunpod(),
+      "--plan",
+    );
     expect(code).toBe(1);
     expect(output).toContain("an env var is set in both vllm and secrets");
   });

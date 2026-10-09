@@ -7,12 +7,12 @@ on:
     branches: [main]
     paths:
       - "loorel.config.ts"
-      - "models/**"
-      - "infra/runpod/**"
+      - "endpoints/**"
+      - "packages/loorel/**"
   workflow_dispatch:
     inputs:
       prune:
-        description: "Delete endpoints removed from loorel.config.ts (only those in endpoints.json)"
+        description: "Delete endpoints whose directory was removed (only those in endpoints.json)"
         type: boolean
         default: false
 

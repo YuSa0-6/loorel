@@ -12,5 +12,5 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["infra", "src", "models", "loorel.config.ts", "vite.config.ts"]
+  "include": ["packages/loorel/src", "endpoints", "loorel.config.ts", "vite.config.ts"]
 }

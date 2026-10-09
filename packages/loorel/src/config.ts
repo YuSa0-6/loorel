@@ -1,7 +1,9 @@
-// Loads loorel.config.ts (models and endpoints written in TypeScript) into endpoint specs.
+// Loads loorel.config.ts (shared defaults) and endpoints/<name>/endpoint.config.ts
+// (one Runpod endpoint per directory) into endpoint specs.
 // The types in define.ts guide the editor; the schemas here check the same values at runtime,
 // including the rules that types cannot express.
-import { access } from "node:fs/promises";
+import type { Dirent } from "node:fs";
+import { access, readdir } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import * as v from "valibot";
@@ -24,6 +26,8 @@ export interface EndpointSpec {
 }
 
 export const CONFIG_FILE = "loorel.config.ts";
+export const ENDPOINTS_DIR = "endpoints";
+export const ENDPOINT_FILE = "endpoint.config.ts";
 
 // Keys that look like credentials. Their values would show up in PR comments.
 export const SECRET_KEY = /TOKEN|SECRET|PASSWORD|API_KEY|CREDENTIAL/i;
@@ -125,7 +129,6 @@ const Model = v.pipe(
 
 const Endpoint = v.pipe(
   v.strictObject({
-    name: v.optional(Name),
     model: Model,
     gpu: v.strictObject({
       pools: v.pipe(v.array(v.string()), v.minLength(1)),
@@ -145,62 +148,91 @@ const Endpoint = v.pipe(
   v.check((e) => e.workers.min <= e.workers.max, "workers.min must be <= workers.max"),
 );
 
-const Config = v.strictObject({
-  defaults: Defaults,
-  endpoints: v.array(Endpoint),
-});
+const Config = v.strictObject({ defaults: Defaults });
 
 export class ConfigError extends Error {}
 
-/** "endpoints.0.model.vllm.X" -> "endpoints[0] (qwen3-8b) model.vllm.X" */
-function where(issue: v.BaseIssue<unknown>, raw: unknown): string {
-  const keys = (issue.path ?? []).map((p) => p.key as string | number);
-  if (keys.length === 0) return "(root)";
-  if (keys[0] === "endpoints" && typeof keys[1] === "number") {
-    const e = (raw as { endpoints?: { name?: unknown; model?: { name?: unknown } }[] }).endpoints?.[
-      keys[1]
-    ];
-    const name = e?.name ?? e?.model?.name;
-    const label = `endpoints[${keys[1]}]${typeof name === "string" ? ` (${name})` : ""}`;
-    return keys.length > 2 ? `${label} ${keys.slice(2).join(".")}` : label;
-  }
-  return keys.join(".");
-}
-
-async function importConfig(root: string): Promise<unknown> {
-  const file = path.join(root, CONFIG_FILE);
-  try {
-    await access(file);
-  } catch {
-    throw new ConfigError(`${CONFIG_FILE} not found`);
-  }
+/** Imports a config file and validates its default export. `rel` is used in messages. */
+async function importConfig<T>(
+  root: string,
+  rel: string,
+  schema: v.GenericSchema<unknown, T>,
+): Promise<T> {
+  const file = path.join(root, rel);
+  let raw: unknown;
   try {
     const mod = (await import(pathToFileURL(file).href)) as { default?: unknown };
     if (mod.default === undefined) throw new Error("it has no default export");
-    return mod.default;
+    raw = mod.default;
   } catch (e) {
-    throw new ConfigError(`${CONFIG_FILE}: ${(e as Error).message}`);
+    throw new ConfigError(`${rel}: ${(e as Error).message}`);
   }
+  const result = v.safeParse(schema, raw);
+  if (!result.success) {
+    const issues = result.issues
+      .map((i) => `  ${v.getDotPath(i) ?? "(root)"}: ${i.message}`)
+      .join("\n");
+    throw new ConfigError(`${rel}:\n${issues}`);
+  }
+  return result.output;
 }
 
-/** Loads every endpoint as a full spec, sorted by name. */
-export async function loadSpecs(root: string): Promise<EndpointSpec[]> {
-  const raw = await importConfig(root);
-  const result = v.safeParse(Config, raw);
-  if (!result.success) {
-    const issues = result.issues.map((i) => `  ${where(i, raw)}: ${i.message}`).join("\n");
-    throw new ConfigError(`${CONFIG_FILE}:\n${issues}`);
-  }
-  const { defaults, endpoints } = result.output;
+const exists = (file: string) =>
+  access(file).then(
+    () => true,
+    () => false,
+  );
 
-  const specs = endpoints.map((e): EndpointSpec => {
+/**
+ * Endpoint directory names under endpoints/, sorted. Directories starting with "_" or "."
+ * hold shared code (for example a model used by several endpoints) and are skipped.
+ */
+async function endpointDirs(root: string): Promise<string[]> {
+  let entries: Dirent[];
+  try {
+    entries = await readdir(path.join(root, ENDPOINTS_DIR), { withFileTypes: true });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw e;
+  }
+  const names = entries
+    .filter((d) => d.isDirectory() && !/^[_.]/.test(d.name))
+    .map((d) => d.name)
+    .sort((a, b) => a.localeCompare(b));
+  for (const name of names) {
+    const dir = `${ENDPOINTS_DIR}/${name}`;
+    const result = v.safeParse(Name, name);
+    if (!result.success) {
+      throw new ConfigError(
+        `${dir}: ${result.issues[0].message} (the directory name is the endpoint name)`,
+      );
+    }
+    if (!(await exists(path.join(root, dir, ENDPOINT_FILE)))) {
+      throw new ConfigError(
+        `${dir}: ${ENDPOINT_FILE} not found (start the directory name with _ to keep shared code there)`,
+      );
+    }
+  }
+  return names;
+}
+
+/** Loads loorel.config.ts and every endpoints/<name>/endpoint.config.ts as full specs, sorted by name. */
+export async function loadSpecs(root: string): Promise<EndpointSpec[]> {
+  if (!(await exists(path.join(root, CONFIG_FILE)))) {
+    throw new ConfigError(`${CONFIG_FILE} not found`);
+  }
+  const { defaults } = await importConfig(root, CONFIG_FILE, Config);
+
+  const specs: EndpointSpec[] = [];
+  for (const name of await endpointDirs(root)) {
+    const e = await importConfig(root, `${ENDPOINTS_DIR}/${name}/${ENDPOINT_FILE}`, Endpoint);
     const { model } = e;
     const refs = Object.fromEntries(
-      Object.entries(model.secrets).map(([k, name]) => [k, secretRef(name)]),
+      Object.entries(model.secrets).map(([k, secret]) => [k, secretRef(secret)]),
     );
     const scaling = e.scaling ?? defaults.scaling;
-    return {
-      name: e.name ?? model.name,
+    specs.push({
+      name,
       type: defaults.type,
       image: defaults.image,
       disk: e.disk ?? defaults.disk,
@@ -223,17 +255,7 @@ export async function loadSpecs(root: string): Promise<EndpointSpec[]> {
       scaling,
       timeout: e.timeout ?? defaults.timeout,
       flashboot: e.flashboot ?? defaults.flashboot,
-    };
-  });
-
-  const seen = new Set<string>();
-  for (const s of specs) {
-    if (seen.has(s.name)) {
-      throw new ConfigError(
-        `${CONFIG_FILE}: two endpoints are named ${s.name}; set a different name on one of them`,
-      );
-    }
-    seen.add(s.name);
+    });
   }
-  return specs.sort((a, b) => a.name.localeCompare(b.name));
+  return specs;
 }

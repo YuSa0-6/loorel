@@ -1,4 +1,4 @@
-import { defineModel } from "loorel/config";
+import { defineModel } from "loorel";
 
 export default defineModel({
   name: "qwen3-8b",

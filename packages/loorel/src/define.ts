@@ -1,4 +1,4 @@
-// Types and helpers for loorel.config.ts and models/*.ts, imported as "loorel/config".
+// Types and helpers imported as "loorel" by loorel.config.ts and endpoints/<name>/*.config.ts.
 // The define* functions return their argument unchanged: they exist so that the editor
 // checks and completes each definition. config.ts validates the values again at runtime.
 
@@ -54,11 +54,13 @@ export interface ModelDef {
 export type Scaling =
   | {
       type: "QUEUE_DELAY";
-      /** seconds a request may wait before a worker is added */ queueDelay: number;
+      /** Seconds a request may wait before a worker is added. */
+      queueDelay: number;
     }
   | {
       type: "REQUEST_COUNT";
-      /** requests per worker before a worker is added */ requestCount: number;
+      /** Requests per worker before a worker is added. */
+      requestCount: number;
     };
 
 export type FlashBoot = "OFF" | "FLASHBOOT" | "PRIORITY_FLASHBOOT";
@@ -80,10 +82,12 @@ export interface Defaults {
   env?: VllmEnv;
 }
 
-/** Where and how a model runs: one Runpod Serverless endpoint. */
+/**
+ * Where and how a model runs: one Runpod Serverless endpoint.
+ * The directory name (endpoints/<name>/) is the endpoint name on Runpod.
+ */
 export interface EndpointDef {
-  /** Endpoint name on Runpod and the key in endpoints.json. Defaults to model.name. */
-  name?: string;
+  /** Usually imported from ./model.config.ts, or from another endpoint's directory. */
   model: ModelDef;
   gpu: {
     /** Pools to start workers in, in order of preference. At least one. */
@@ -106,9 +110,9 @@ export interface EndpointDef {
   scaling?: Scaling;
 }
 
+/** loorel.config.ts. Endpoints are found in endpoints/<name>/endpoint.config.ts. */
 export interface Config {
   defaults: Defaults;
-  endpoints: EndpointDef[];
 }
 
 export const defineModel = <const M extends ModelDef>(model: M): M => model;
