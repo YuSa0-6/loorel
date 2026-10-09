@@ -472,7 +472,9 @@ v2 では GPU をプール単位で選びます。特定の型だけにしたい
 <details>
 <summary><b>HF_TOKEN のような秘密はどこに置きますか</b></summary>
 
-値は Runpod の Secret に置き、YAML の `secrets` には Secret の名前だけを書きます。値を YAML に直接書くと PR コメントに出るため、plan が止めます。手順は[秘密の渡し方](#秘密の渡し方)にあります。
+値は Runpod の Secret に置き、YAML の `secrets` には Secret の名前だけを書きます。手順は[秘密の渡し方](#秘密の渡し方)にあります。
+
+YAML に書いた値は plan の PR コメントにそのまま出ます。秘密の値は、名前にかかわらず YAML に書かないでください。plan が検出して止めるのは、名前に `TOKEN`・`SECRET`・`PASSWORD`・`API_KEY`・`CREDENTIAL` を含む env だけです（例: `AWS_ACCESS_KEY_ID` は検出されません）。
 
 </details>
 
