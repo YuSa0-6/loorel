@@ -2,6 +2,9 @@
   "name": "loorel",
   "private": true,
   "type": "module",
+  "exports": {
+    "./config": "./infra/runpod/define.ts"
+  },
   "scripts": {
     "prepare": "vp config",
     "check": "vp check",
@@ -13,8 +16,7 @@
   "dependencies": {
     "@runpod/ai-sdk-provider": "1.4.0",
     "ai": "^6",
-    "valibot": "^1.5.0",
-    "yaml": "^2.9.1"
+    "valibot": "^1.5.0"
   },
   "devDependencies": {
     "@types/node": "22",

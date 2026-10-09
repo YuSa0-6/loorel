@@ -1,4 +1,4 @@
-// Compares models/*.yaml with the endpoints on Runpod and renders the result.
+// Compares loorel.config.ts with the endpoints on Runpod and renders the result.
 import { isDeepStrictEqual } from "node:util";
 import { type EndpointSpec, SECRET_KEY, SECRET_REF } from "./config.ts";
 import type { GpuType, RemoteEndpoint } from "./runpod-api.ts";
@@ -13,7 +13,7 @@ export type Action =
   | { kind: "create"; name: string; spec: EndpointSpec }
   | { kind: "update"; name: string; id: string; changes: Change[]; patch: Record<string, unknown> }
   | { kind: "noop"; name: string; id: string }
-  // Listed in endpoints.json and still on Runpod, but its YAML was removed.
+  // Listed in endpoints.json and still on Runpod, but removed from loorel.config.ts.
   | { kind: "orphan"; name: string; id: string };
 
 export interface Plan {
@@ -21,7 +21,7 @@ export interface Plan {
   warnings: string[];
 }
 
-/** endpoints.json: model name -> endpoint ID. */
+/** endpoints.json: endpoint name -> endpoint ID. */
 export type EndpointIds = Record<string, { id: string }>;
 
 export class PlanError extends Error {}
@@ -197,7 +197,7 @@ export function renderPlan(plan: Plan, { prune }: { prune: boolean }): string {
         lines.push(
           prune
             ? `- delete ${a.name} (${a.id})`
-            : `- ${a.name} (${a.id}): YAML removed; not deleted unless apply runs with --prune`,
+            : `- ${a.name} (${a.id}): removed from loorel.config.ts; not deleted unless apply runs with --prune`,
         );
         break;
     }
@@ -207,7 +207,7 @@ export function renderPlan(plan: Plan, { prune }: { prune: boolean }): string {
     `${count("create")} to create`,
     `${count("update")} to update`,
     `${count("noop")} unchanged`,
-    `${count("orphan")} ${prune ? "to delete" : "without YAML"}`,
+    `${count("orphan")} ${prune ? "to delete" : "not in config"}`,
   ].join(", ");
   const out = ["### Runpod plan", "", `**${summary}**`, ""];
   if (lines.length > 0) out.push("```diff", ...lines, "```", "");

@@ -1,10 +1,10 @@
-// Syncs models/*.yaml to Runpod Serverless endpoints.
+// Syncs the endpoints in loorel.config.ts to Runpod Serverless.
 //
 //   node infra/runpod/sync.ts --plan  [--out plan.md]
 //   node infra/runpod/sync.ts --apply [--prune] [--out apply.md]
 //
 // Requires RUNPOD_API_KEY (a Read Only key is enough for --plan).
-// --apply writes endpoints.json: model name -> endpoint ID.
+// --apply writes endpoints.json: endpoint name -> endpoint ID.
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -116,7 +116,7 @@ export async function sync({
 }
 
 interface ApplyResult {
-  /** model name -> endpoint ID for every model that exists on Runpod now. */
+  /** endpoint name -> endpoint ID for every endpoint that exists on Runpod now. */
   applied: Map<string, string>;
   deleted: Set<string>;
   lines: string[];
