@@ -11,6 +11,7 @@
     "smoke": "node packages/loorel/src/smoke.ts"
   },
   "dependencies": {
+    "ai": "^6",
     "loorel": "workspace:*"
   },
   "devDependencies": {
