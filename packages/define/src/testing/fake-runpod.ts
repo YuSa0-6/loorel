@@ -8,7 +8,7 @@ export interface FakeRunpod {
   fetch: typeof fetch;
 }
 
-export const GPU_TYPES: GpuType[] = [
+const GPU_TYPES: GpuType[] = [
   { id: "NVIDIA GeForce RTX 4090", pool: "ADA_24" },
   { id: "NVIDIA L4", pool: "ADA_24" },
   { id: "NVIDIA A100 80GB PCIe", pool: "AMPERE_80" },
