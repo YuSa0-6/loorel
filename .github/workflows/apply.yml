@@ -8,7 +8,7 @@ on:
     paths:
       - "loorel.config.ts"
       - "endpoints/**"
-      - "packages/define/**"
+      # Code-only changes need an explicit workflow_dispatch after review.
   workflow_dispatch:
     inputs:
       prune:

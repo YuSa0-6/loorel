@@ -688,12 +688,13 @@ https://gateway.ai.cloudflare.com/v1/{account}/runpod/custom-runpod/v2/{endpoint
 
 ## GitHub Actions
 
-| workflow                      | きっかけ                                                                             | すること                                                               |
-| ----------------------------- | ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------- |
-| `.github/workflows/plan.yml`  | PR                                                                                   | `vp check`・テストのあと plan を PR コメントに出す（1 件を上書き更新） |
-| `.github/workflows/apply.yml` | main への push（`loorel.config.ts`・`endpoints/**`・`packages/define/**`）、手動実行 | 承認後に apply を実行し、`endpoints.json` が変わったら bot PR を作る   |
+| workflow                      | きっかけ                                                       | すること                                                               |
+| ----------------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `.github/workflows/plan.yml`  | PR                                                             | `vp check`・テストのあと plan を PR コメントに出す（1 件を上書き更新） |
+| `.github/workflows/apply.yml` | main への push（`loorel.config.ts`・`endpoints/**`）、手動実行 | 承認後に apply を実行し、`endpoints.json` が変わったら bot PR を作る   |
 
 手動実行（Actions → apply → Run workflow）では `prune` を選べます。apply は同時に 1 本だけ動き、後から来たものは順番待ちになります。
+`packages/define/**` だけの変更では apply を自動起動しません。同期ロジックの変更を Runpod に反映する必要がある場合は、差分と費用を確認してから手動実行してください。
 
 ### 最初に 1 回だけ行うリポジトリ設定
 
