@@ -17,6 +17,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          # fallow audit compares against the base branch, so it needs the history.
+          fetch-depth: 0
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v5
         with:
@@ -27,6 +30,10 @@ jobs:
       - run: pnpm exec vp test run
       - name: Decision worker tests
         run: python3 -m unittest discover -s workers/decision -t workers/decision
+      # Unused files, exports and dependencies anywhere in the repository.
+      - run: pnpm exec fallow dead-code
+      # Complexity and duplication in the files this pull request changes.
+      - run: pnpm exec fallow audit --base "origin/${{ github.base_ref }}"
 
   plan:
     needs: check
