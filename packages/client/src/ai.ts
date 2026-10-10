@@ -1,7 +1,7 @@
 import { createRunpod } from "@runpod/ai-sdk-provider";
 
 export interface LoorelModelOptions {
-  /** YAML name / OPENAI_SERVED_MODEL_NAME_OVERRIDE, not the endpoint ID. */
+  /** Model name from defineModel / OPENAI_SERVED_MODEL_NAME_OVERRIDE, not the endpoint ID. */
   model: string;
   apiKey: string;
   /** Use exactly one of endpointId (direct Runpod) and baseURL (explicit route). */
@@ -17,7 +17,7 @@ export class InferenceConfigError extends Error {}
 /** Creates an AI SDK chat model for an existing Loorel vLLM endpoint. */
 export function createLoorelModel(options: LoorelModelOptions) {
   if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(options.model)) {
-    throw new InferenceConfigError("model must be the lowercase YAML name");
+    throw new InferenceConfigError("model must be the lowercase model name");
   }
   if (!options.apiKey || /\s/.test(options.apiKey)) {
     throw new InferenceConfigError("RUNPOD_API_KEY is missing or invalid");

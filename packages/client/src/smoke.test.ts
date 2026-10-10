@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test, vi } from "vite-plus/test";
-import { createLoorelModel, InferenceConfigError } from "../../src/ai.ts";
+import { createLoorelModel, InferenceConfigError } from "./ai.ts";
 import { runInferenceSmoke, smoke, SMOKE_OUTPUT } from "./smoke.ts";
 
 const KEY = "test-runpod-secret";

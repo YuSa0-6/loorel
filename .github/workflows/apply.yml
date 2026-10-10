@@ -6,12 +6,13 @@ on:
   push:
     branches: [main]
     paths:
-      - "models/**"
-      - "infra/runpod/**"
+      - "loorel.config.ts"
+      - "endpoints/**"
+      - "packages/define/**"
   workflow_dispatch:
     inputs:
       prune:
-        description: "Delete endpoints whose YAML was removed (only those in endpoints.json)"
+        description: "Delete endpoints whose directory was removed (only those in endpoints.json)"
         type: boolean
         default: false
 

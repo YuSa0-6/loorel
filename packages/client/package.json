@@ -1,0 +1,12 @@
+{
+  "name": "@loorel/client",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@runpod/ai-sdk-provider": "1.4.0",
+    "ai": "^6"
+  }
+}

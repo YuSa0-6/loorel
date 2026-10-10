@@ -3,7 +3,7 @@ import { writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { APICallError, generateText } from "ai";
-import { createLoorelModel, InferenceConfigError, type LoorelModelOptions } from "../../src/ai.ts";
+import { createLoorelModel, InferenceConfigError, type LoorelModelOptions } from "./ai.ts";
 
 export const SMOKE_OUTPUT = "LOOREL_OK";
 const DEFAULT_TIMEOUT_MS = 120_000;
