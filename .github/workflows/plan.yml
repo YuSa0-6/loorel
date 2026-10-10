@@ -28,6 +28,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec vp check
       - run: pnpm exec vp test run
+      - name: Decision worker tests
+        run: python3 -m unittest discover -s workers/decision -t workers/decision
       # Unused files, exports and dependencies anywhere in the repository.
       - run: pnpm exec fallow dead-code
       # Complexity and duplication in the files this pull request changes.

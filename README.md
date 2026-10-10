@@ -9,7 +9,7 @@
 
 [Quickstart](#quickstart) · [Why](#why-loorel) · [しくみ](#しくみ) · [リファレンス](#リファレンス) · [FAQ](#よくある質問) · [ロードマップ](#ロードマップ)
 
-`preview` · 実装 10 / 10（実 API での動作確認待ち）
+`preview` · 実装 11 / 11（実 API での動作確認待ち）
 
 </div>
 
@@ -470,6 +470,7 @@ Secret の値を変えたときは、次に起動した worker から新しい�
 // endpoints/risk-check/model.config.ts
 import { defineModel } from "@loorel/define";
 
+// source は worker が読むモデル名（下の workers/decision では Ollama の名前 "clef"）
 export default defineModel({ name: "clef", source: "Cloudflare/clef", api: "decision" });
 ```
 
@@ -515,8 +516,57 @@ vLLM は決定モデルを配信できないので、`image` に決定 API を�
 | 待ち時間が長いとき | `/runsync` が `IN_QUEUE`・`IN_PROGRESS` を返したら、`/status/{jobId}` を見に行く    |
 | 返事のチェック     | すべての質問に同じ `type` の答えがあるか、`choice` が選択肢の中にあるかを確かめる   |
 
+#### 決定モデルの worker イメージ（workers/decision）
+
+この約束どおりに動く worker を `workers/decision/` に置いています。中で Ollama が決定モデルを動かし、Runpod のハンドラーがジョブを Ollama の `/v1/systemone` に渡します。
+
+```mermaid
+flowchart LR
+  C["@loorel/client<br>decide()"] -->|"POST /runsync<br>{ input }"| R["Runpod<br>キュー"]
+  R --> H["handler.py"]
+  H -->|"POST /v1/systemone"| O["Ollama 0.40.2<br>clef / clef-flash"]
+  O -->|"{ model, answers, usage }"| H
+  H -->|"output"| R
+```
+
+| ファイル     | 役割                                                                                                                                                         |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `Dockerfile` | `ollama/ollama:0.40.2` に Python と Runpod SDK（`runpod==1.12.0`）を足す                                                                                     |
+| `start.sh`   | Ollama を起動し、`MODEL_NAME` のモデルを pull してから、ハンドラーを起動する                                                                                 |
+| `handler.py` | `input` の `state`・`questions`・`images` を確かめて Ollama に渡し、返事をそのまま `output` にする。失敗は `{ "error": ... }` にして、ジョブを FAILED にする |
+| `VERSION`    | イメージのタグ。main に merge すると `ghcr.io/<owner>/loorel-decision-worker:<VERSION>` が作られる                                                           |
+
+```ts
+// endpoints/risk-check/model.config.ts
+import { defineModel } from "@loorel/define";
+
+// この worker では source に Ollama のモデル名を書く（clef か clef-flash）
+export default defineModel({ name: "risk-check", source: "clef-flash", api: "decision" });
+```
+
+```ts
+// endpoints/risk-check/endpoint.config.ts
+import { defineEndpoint } from "@loorel/define";
+import model from "./model.config.ts";
+
+export default defineEndpoint({
+  model,
+  image: "ghcr.io/yusa0-6/loorel-decision-worker:0.1.0",
+  gpu: { pools: ["ADA_24"] }, // clef-flash（9B）は 24 GB に収まる。clef（27B）はもっと大きい GPU を選ぶ
+  workers: { min: 0, max: 1 },
+});
+```
+
+| 気をつけること     | 内容                                                                                                                                  |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
+| イメージの公開範囲 | GHCR のパッケージは最初は非公開です。Runpod が pull できるように、GitHub のパッケージ設定で公開にしてください                         |
+| タグを変えるとき   | `workers/decision/VERSION` を上げます。同じタグへの上書きは、ワークフローが止めます                                                   |
+| 画像を渡すとき     | Ollama は base64 の文字列だけを受け付けます（URL と data URL は使えません）                                                           |
+| 重みの置き場所     | `/runpod-volume` があれば（ネットワークボリュームを付けたとき）、重みを `/runpod-volume/ollama/models` に置き、次の起動で使い回します |
+| 動作確認           | ハンドラーはテストで確かめています。Runpod 上の実際の推論は、まだ確かめていません                                                     |
+
 > [!NOTE]
-> Clef の重みは Apache 2.0 で Hugging Face にあります。自分で動かす方法として、Ollama（0.35.1 以上）の `/v1/systemone` と、Hugging Face のカスタムコードが案内されています。Runpod 用の worker イメージは、まだこのリポジトリにありません。
+> Clef の重みは Apache 2.0 で Hugging Face にあり、Ollama では 0.35.1 以上で `/v1/systemone` から使えます。
 
 ### loorel.config.ts
 
@@ -695,18 +745,19 @@ Runpod の AI SDK provider は、モデル ID をそのまま vLLM へのリク�
 
 実装は番号の順に、動作を確かめてから次へ進みます。
 
-| #   | 内容                                                        | 状態                                 |
-| --- | ----------------------------------------------------------- | ------------------------------------ |
-| 1   | `infra/cloudflare/setup.sh`：Gateway とカスタムプロバイダー | ✅ 動作確認済み                      |
-| 2   | 共通設定の持ち方（`loorel.config.ts` の `defaults`）        | ✅ 決定                              |
-| 3   | `sync.ts --plan`：検証と差分                                | 🧪 テスト 15 件・実 API 確認待ち     |
-| 4   | `sync.ts --apply`：作成・更新と `endpoints.json`            | 🧪 テスト 10 件・実 API 確認待ち     |
-| 5   | GitHub Actions：PR で plan、main で apply                   | 🧪 actionlint 済み・初回実行待ち     |
-| 6   | `endpoints.json` の bot PR                                  | 🧪 actionlint 済み・初回実行待ち     |
-| 7   | `@loorel/client`・`pnpm smoke`：SDK 推論と応答検証          | 🧪 モックで検証済み・実推論は未検証  |
-| 8   | gated モデルの秘密（Runpod Secret の参照）                  | 🧪 テスト 9 件・実 API 確認待ち      |
-| 9   | TypeScript の定義（`endpoints/<名前>/`・`@loorel/define`）  | 🧪 テスト済み                        |
-| 10  | Decision API（`api: "decision"`・`decider()`）              | 🧪 モックで検証済み・worker は未作成 |
+| #   | 内容                                                        | 状態                                         |
+| --- | ----------------------------------------------------------- | -------------------------------------------- |
+| 1   | `infra/cloudflare/setup.sh`：Gateway とカスタムプロバイダー | ✅ 動作確認済み                              |
+| 2   | 共通設定の持ち方（`loorel.config.ts` の `defaults`）        | ✅ 決定                                      |
+| 3   | `sync.ts --plan`：検証と差分                                | 🧪 テスト 15 件・実 API 確認待ち             |
+| 4   | `sync.ts --apply`：作成・更新と `endpoints.json`            | 🧪 テスト 10 件・実 API 確認待ち             |
+| 5   | GitHub Actions：PR で plan、main で apply                   | 🧪 actionlint 済み・初回実行待ち             |
+| 6   | `endpoints.json` の bot PR                                  | 🧪 actionlint 済み・初回実行待ち             |
+| 7   | `@loorel/client`・`pnpm smoke`：SDK 推論と応答検証          | 🧪 モックで検証済み・実推論は未検証          |
+| 8   | gated モデルの秘密（Runpod Secret の参照）                  | 🧪 テスト 9 件・実 API 確認待ち              |
+| 9   | TypeScript の定義（`endpoints/<名前>/`・`@loorel/define`）  | 🧪 テスト済み                                |
+| 10  | Decision API（`api: "decision"`・`decider()`）              | 🧪 モックで検証済み・実推論は未検証          |
+| 11  | 決定モデルの worker イメージ（`workers/decision`）          | 🧪 ハンドラーのテスト済み・Runpod 上は未検証 |
 
 ## 開発
 
