@@ -8,7 +8,7 @@ on:
     paths:
       - "loorel.config.ts"
       - "endpoints/**"
-      - "packages/loorel/**"
+      - "packages/define/**"
   workflow_dispatch:
     inputs:
       prune:

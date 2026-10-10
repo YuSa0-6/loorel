@@ -9,7 +9,7 @@
 
 [Quickstart](#quickstart) · [Why](#why-loorel) · [しくみ](#しくみ) · [リファレンス](#リファレンス) · [FAQ](#よくある質問) · [ロードマップ](#ロードマップ)
 
-`preview` · 実装 9 / 9（実 API での動作確認待ち）
+`preview` · 実装 10 / 10（実 API での動作確認待ち）
 
 </div>
 
@@ -138,7 +138,7 @@ endpoint URL: https://gateway.ai.cloudflare.com/v1/{account}/runpod/custom-runpo
 
 ```ts
 // endpoints/qwen3-8b/model.config.ts
-import { defineModel } from "loorel";
+import { defineModel } from "@loorel/define";
 
 export default defineModel({
   name: "qwen3-8b", // アプリが `model` に指定する名前
@@ -149,7 +149,7 @@ export default defineModel({
 
 ```ts
 // endpoints/qwen3-8b/endpoint.config.ts
-import { defineEndpoint } from "loorel";
+import { defineEndpoint } from "@loorel/define";
 import model from "./model.config.ts";
 
 export default defineEndpoint({
@@ -188,28 +188,35 @@ RUNPOD_API_KEY=... pnpm plan
 
 ### 5. SDK で呼ぶ 🧪
 
-`loorel/ai` の `createLoorelModel` が、既存エンドポイント用の AI SDK モデルを作ります。AI SDK は v6、Runpod provider は 1.4.0 です。モデル名は `defineModel` の `name`、エンドポイント ID は接続先として別に渡します。
+呼び出す側は `@loorel/client` です。`pnpm types` が作る `loorel.gen.ts`（エンドポイント名 → モデル名と API の種類）と、apply が書く `endpoints.json`（エンドポイント名 → ID）だけを読みます。定義する側の `@loorel/define` には依存しません。
 
-Gateway の `RUNPOD_BASE_URL` は `/openai/v1` までの URL です。`/chat/completions` は SDK が付けます。
+```sh
+pnpm types   # endpoints/ から loorel.gen.ts を作る（定義を変えたら実行する）
+```
 
 ```ts
 import { generateText } from "ai";
-import { createLoorelModel } from "loorel/ai";
+import { createLoorelClient } from "@loorel/client";
+import { endpoints } from "./loorel.gen.ts";
+import ids from "./endpoints.json" with { type: "json" };
 
-const model = createLoorelModel({
-  model: "qwen3-8b", // = OPENAI_SERVED_MODEL_NAME_OVERRIDE
+const loorel = createLoorelClient({
+  endpoints,
+  ids,
   apiKey: process.env.RUNPOD_API_KEY ?? "",
-  baseURL: process.env.RUNPOD_BASE_URL,
-  gatewayToken: process.env.CF_AIG_TOKEN,
+  // 省略すると Runpod へ直接つなぐ
+  gateway: { accountId: "...", gatewayId: "runpod", token: process.env.CF_AIG_TOKEN ?? "" },
 });
 
 const { text } = await generateText({
-  model,
+  model: loorel.model("qwen3-8b"), // OpenAI 互換のエンドポイントだけを受け付ける
   prompt: "こんにちは",
 });
 ```
 
-Runpod へ直接接続するときは、`baseURL` のかわりに `endpointId` を渡します。接続先を必須にしているため、公開モデルへの意図しないフォールバックはありません。
+AI SDK は v6、Runpod provider は 1.4.0 です。決定モデル（Decision API）の呼び方は [呼び出す側](#呼び出す側loorelclient) にあります。
+
+接続先は `endpoints.json` の ID から組み立てます。ID がないエンドポイントはエラーになり、公開モデルへの意図しないフォールバックはありません。ID や URL を直接渡したいときは、低いレベルの `createLoorelModel`（`model`・`apiKey`・`endpointId` または `baseURL`）も使えます。
 
 #### パイプラインからの推論 smoke test
 
@@ -278,7 +285,11 @@ endpoints/
   qwen3-8b-a100/
     endpoint.config.ts           ../qwen3-8b/model.config.ts を import して使い回す
   _shared/                       _ で始まるディレクトリは共有コード置き場（エンドポイントにならない）
-packages/loorel/                 ツール本体（plan・apply・smoke、型と define 関数）
+loorel.gen.ts                    pnpm types が作る。エンドポイント名 → モデル名・API の種類
+endpoints.json                   apply が書く。エンドポイント名 → ID
+packages/
+  define/                        @loorel/define：定義する側（型・define 関数・plan・apply・types）
+  client/                        @loorel/client：呼び出す側（OpenAI 互換・Decision API・smoke）
 ```
 
 | 決まり                                                                | 理由                                                          |
@@ -288,7 +299,21 @@ packages/loorel/                 ツール本体（plan・apply・smoke、型と
 | 各ディレクトリに `endpoint.config.ts` が必須                          | `endpont.config.ts` のような書き間違いで黙って消えるのを防ぐ  |
 | `_` と `.` で始まるディレクトリ、ディレクトリ以外のファイルは読まない | 複数のエンドポイントで使うモデルや README を置ける            |
 
-設定ファイルは `import { ... } from "loorel"` で型を読み込みます。`loorel` は pnpm workspace の `packages/loorel` です。Node 22.18 以上は `.ts` をそのまま実行できるので、ビルドは要りません。
+設定ファイルは `import { ... } from "@loorel/define"` で型を読み込みます。どちらのパッケージも pnpm workspace の中にあり、Node 22.18 以上は `.ts` をそのまま実行できるので、ビルドは要りません。
+
+```mermaid
+flowchart LR
+  D["endpoints/*/*.config.ts<br>@loorel/define"] -->|apply| J["endpoints.json<br>名前 → ID"]
+  D -->|pnpm types| G["loorel.gen.ts<br>名前 → モデル名・API"]
+  J --> C["@loorel/client<br>model() / decider()"]
+  G --> C
+  C --> App["アプリ"]
+```
+
+| パッケージ       | 役割                                                           | 依存                            |
+| ---------------- | -------------------------------------------------------------- | ------------------------------- |
+| `@loorel/define` | 型・define 関数・チェック・plan・apply・`loorel.gen.ts` の生成 | `valibot`                       |
+| `@loorel/client` | 定義したエンドポイントを呼ぶ（OpenAI 互換・Decision API）      | `ai`、`@runpod/ai-sdk-provider` |
 
 ### endpoint.config.ts
 
@@ -302,6 +327,7 @@ packages/loorel/                 ツール本体（plan・apply・smoke、型と
 | `gpu.count`         | 任意 | `1`      | 1 ワーカーあたりの GPU 数                                       |
 | `workers.min`       | 必須 | —        | 常に起動しておく数。`0` なら待機中は課金なし                    |
 | `workers.max`       | 必須 | —        | 同時に起動する上限                                              |
+| `image`             | 任意 | defaults | worker のイメージ（タグ固定）。決定モデルでは必須               |
 | `disk`              | 任意 | defaults | コンテナのディスク（GB）。モデルはここに落とす                  |
 | `idleTimeout`       | 任意 | defaults | 何秒使われなければワーカーを止めるか                            |
 | `timeout`           | 任意 | defaults | 1 リクエストの上限（ミリ秒）                                    |
@@ -314,18 +340,19 @@ packages/loorel/                 ツール本体（plan・apply・smoke、型と
 
 `defineModel` で書きます。
 
-| 項目        | 必須 | 既定値 | 意味                                                                     |
-| ----------- | ---- | ------ | ------------------------------------------------------------------------ |
-| `name`      | 必須 | —      | アプリが `model` に指定する名前。小文字・数字・`-`                       |
-| `source`    | 必須 | —      | Hugging Face のリポジトリ（例 `Qwen/Qwen3-8B`）。`MODEL_NAME` として渡る |
-| `vllm.*`    | 任意 | `{}`   | vLLM worker の環境変数。数値・真偽値も書ける（文字列にして送る）         |
-| `secrets.*` | 任意 | `{}`   | 環境変数名 → Runpod Secret の名前。[秘密の渡し方](#秘密の渡し方)         |
+| 項目        | 必須 | 既定値     | 意味                                                                                       |
+| ----------- | ---- | ---------- | ------------------------------------------------------------------------------------------ |
+| `name`      | 必須 | —          | アプリが `model` に指定する名前。小文字・数字・`-`                                         |
+| `source`    | 必須 | —          | Hugging Face のリポジトリ（例 `Qwen/Qwen3-8B`）。`MODEL_NAME` として渡る                   |
+| `api`       | 任意 | `"openai"` | 呼び出し方。`"openai"`（チャット）か `"decision"`（[決定モデル](#呼び出す側loorelclient)） |
+| `vllm.*`    | 任意 | `{}`       | vLLM worker の環境変数。数値・真偽値も書ける（文字列にして送る）                           |
+| `secrets.*` | 任意 | `{}`       | 環境変数名 → Runpod Secret の名前。[秘密の渡し方](#秘密の渡し方)                           |
 
 1 つのモデルを複数のエンドポイントで使えます。別の GPU でも動かしたいときは、ディレクトリを足して同じ `model.config.ts` を import します。
 
 ```ts
 // endpoints/qwen3-8b-a100/endpoint.config.ts
-import { defineEndpoint } from "loorel";
+import { defineEndpoint } from "@loorel/define";
 import model from "../qwen3-8b/model.config.ts";
 
 export default defineEndpoint({
@@ -362,7 +389,7 @@ flowchart LR
 
 ```ts
 // endpoints/llama-3-1-8b/model.config.ts
-import { defineModel } from "loorel";
+import { defineModel } from "@loorel/define";
 
 export default defineModel({
   name: "llama-3-1-8b",
@@ -382,6 +409,72 @@ Secret の値を変えたときは、次に起動した worker から新しい�
 
 > [!NOTE]
 > plan は `GET /v2/account/secrets` で Secret の名前の一覧を読みます（値は返りません）。キーにその権限がない場合、plan は警告を出して確認を省きます。
+
+### 呼び出す側（@loorel/client）
+
+`createLoorelClient` が、エンドポイントの `api` に合わせて呼び方を分けます。
+
+| メソッド        | 対象のエンドポイント | 返すもの                                                |
+| --------------- | -------------------- | ------------------------------------------------------- |
+| `model(name)`   | `api: "openai"`      | AI SDK のモデル（`generateText` などに渡す）            |
+| `decider(name)` | `api: "decision"`    | 型付きの `decide()`。決定モデルに質問して確率を受け取る |
+
+違う種類のエンドポイント名を渡すと型エラーになります。
+
+#### 決定モデル（Decision API）
+
+決定モデルは文章を生成しません。状態（`state`）と型付きの質問（`questions`）を受け取り、答えの候補ごとに確率を返します。分類・振り分け・ガードレールに使います。Jev（TypeSafe）・Cloudflare Clef・Perplexity Decider が同じリクエストの形（System One API）を使っています。
+
+| 質問の `type` | 書くもの                                   | 答え                                             |
+| ------------- | ------------------------------------------ | ------------------------------------------------ |
+| `noul`        | `instructions`（はい・いいえで答える質問） | `noul`：「はい」の確率（0〜1）                   |
+| `choice`      | `criteria`：選択肢名 → 説明                | `choice`：一番確率の高い選択肢、`probabilities`  |
+| `score`       | `criteria`：段階の説明の配列（低い順）     | `score`：確率で重み付けした段階、`probabilities` |
+
+```ts
+// endpoints/risk-check/model.config.ts
+export default defineModel({ name: "clef", source: "Cloudflare/clef", api: "decision" });
+
+// endpoints/risk-check/endpoint.config.ts
+export default defineEndpoint({
+  model,
+  image: "your-registry/clef-worker:v1.0.0", // 決定 API を話す worker（下の約束を参照）
+  gpu: { pools: ["HOPPER_141"] },
+  workers: { min: 0, max: 1 },
+});
+```
+
+```ts
+const decide = loorel.decider("risk-check");
+const { answers } = await decide({
+  state: "Checkout has been failing for every customer for the last hour.",
+  questions: {
+    urgent: { type: "noul", instructions: "Is this support request urgent?" },
+    team: {
+      type: "choice",
+      instructions: "Which team should handle this request?",
+      criteria: { billing: "Payments and refunds", technical: "Outages and errors" },
+    },
+  },
+});
+
+answers.urgent.noul; // number
+answers.team.choice; // "billing" | "technical"（質問の選択肢から型が決まる）
+```
+
+#### 決定モデルの worker との約束
+
+vLLM は決定モデルを配信できないので、`image` に決定 API を話す worker を指定します。Loorel はキュー型のエンドポイントに、次の形で送ります。
+
+| 項目               | 内容                                                                                |
+| ------------------ | ----------------------------------------------------------------------------------- |
+| リクエスト         | `POST /v2/{id}/runsync`、本文は `{ "input": { model, state, questions, images? } }` |
+| 返事（`output`）   | System One の返事そのもの：`{ model, answers, usage }`                              |
+| 待ち時間が長いとき | `/runsync` が `IN_QUEUE`・`IN_PROGRESS` を返したら、`/status/{jobId}` を見に行く    |
+| 返事のチェック     | すべての質問に同じ `type` の答えがあるか、`choice` が選択肢の中にあるかを確かめる   |
+
+> [!NOTE]
+> Clef の重みは Apache 2.0 で Hugging Face にあります。自分で動かす方法として、Ollama（0.35.1 以上）の `/v1/systemone` と、Hugging Face のカスタムコードが案内されています。Runpod 用の worker イメージは、まだこのリポジトリにありません。
 
 ### loorel.config.ts
 
@@ -488,7 +581,7 @@ https://gateway.ai.cloudflare.com/v1/{account}/runpod/custom-runpod/v2/{endpoint
 | workflow                      | きっかけ                                                                             | すること                                                               |
 | ----------------------------- | ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------- |
 | `.github/workflows/plan.yml`  | PR                                                                                   | `vp check`・テストのあと plan を PR コメントに出す（1 件を上書き更新） |
-| `.github/workflows/apply.yml` | main への push（`loorel.config.ts`・`endpoints/**`・`packages/loorel/**`）、手動実行 | 承認後に apply を実行し、`endpoints.json` が変わったら bot PR を作る   |
+| `.github/workflows/apply.yml` | main への push（`loorel.config.ts`・`endpoints/**`・`packages/define/**`）、手動実行 | 承認後に apply を実行し、`endpoints.json` が変わったら bot PR を作る   |
 
 手動実行（Actions → apply → Run workflow）では `prune` を選べます。apply は同時に 1 本だけ動き、後から来たものは順番待ちになります。
 
@@ -557,17 +650,18 @@ Runpod の AI SDK provider は、モデル ID をそのまま vLLM へのリク�
 
 実装は番号の順に、動作を確かめてから次へ進みます。
 
-| #   | 内容                                                        | 状態                                |
-| --- | ----------------------------------------------------------- | ----------------------------------- |
-| 1   | `infra/cloudflare/setup.sh`：Gateway とカスタムプロバイダー | ✅ 動作確認済み                     |
-| 2   | 共通設定の持ち方（`loorel.config.ts` の `defaults`）        | ✅ 決定                             |
-| 3   | `sync.ts --plan`：検証と差分                                | 🧪 テスト 15 件・実 API 確認待ち    |
-| 4   | `sync.ts --apply`：作成・更新と `endpoints.json`            | 🧪 テスト 10 件・実 API 確認待ち    |
-| 5   | GitHub Actions：PR で plan、main で apply                   | 🧪 actionlint 済み・初回実行待ち    |
-| 6   | `endpoints.json` の bot PR                                  | 🧪 actionlint 済み・初回実行待ち    |
-| 7   | `loorel/ai`・`pnpm smoke`：SDK 推論と応答検証               | 🧪 モックで検証済み・実推論は未検証 |
-| 8   | gated モデルの秘密（Runpod Secret の参照）                  | 🧪 テスト 9 件・実 API 確認待ち     |
-| 9   | TypeScript の定義（`endpoints/<名前>/`・`packages/loorel`） | 🧪 テスト済み                       |
+| #   | 内容                                                        | 状態                                 |
+| --- | ----------------------------------------------------------- | ------------------------------------ |
+| 1   | `infra/cloudflare/setup.sh`：Gateway とカスタムプロバイダー | ✅ 動作確認済み                      |
+| 2   | 共通設定の持ち方（`loorel.config.ts` の `defaults`）        | ✅ 決定                              |
+| 3   | `sync.ts --plan`：検証と差分                                | 🧪 テスト 15 件・実 API 確認待ち     |
+| 4   | `sync.ts --apply`：作成・更新と `endpoints.json`            | 🧪 テスト 10 件・実 API 確認待ち     |
+| 5   | GitHub Actions：PR で plan、main で apply                   | 🧪 actionlint 済み・初回実行待ち     |
+| 6   | `endpoints.json` の bot PR                                  | 🧪 actionlint 済み・初回実行待ち     |
+| 7   | `@loorel/client`・`pnpm smoke`：SDK 推論と応答検証          | 🧪 モックで検証済み・実推論は未検証  |
+| 8   | gated モデルの秘密（Runpod Secret の参照）                  | 🧪 テスト 9 件・実 API 確認待ち      |
+| 9   | TypeScript の定義（`endpoints/<名前>/`・`@loorel/define`）  | 🧪 テスト済み                        |
+| 10  | Decision API（`api: "decision"`・`decider()`）              | 🧪 モックで検証済み・worker は未作成 |
 
 ## 開発
 

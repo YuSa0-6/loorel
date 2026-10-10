@@ -3,7 +3,7 @@
 //   endpoints/<name>/endpoint.config.ts  where and how it runs (defineEndpoint)
 // Runpod templates are not used: in REST API v2 a template is copied into the
 // endpoint once and never linked again, so the repository holds the shared settings.
-import { defineConfig } from "loorel";
+import { defineConfig } from "@loorel/define";
 
 export default defineConfig({
   defaults: {

@@ -17,12 +17,15 @@ importers:
 
   .:
     dependencies:
+      '@loorel/client':
+        specifier: workspace:*
+        version: link:packages/client
+      '@loorel/define':
+        specifier: workspace:*
+        version: link:packages/define
       ai:
         specifier: ^6
         version: 6.0.299(zod@4.6.5)
-      loorel:
-        specifier: workspace:*
-        version: link:packages/loorel
     devDependencies:
       '@types/node':
         specifier: '22'
@@ -34,7 +37,7 @@ importers:
         specifier: 'catalog:'
         version: 1.0.0(@opentelemetry/api@1.9.1)(@types/node@22.20.4)(@vitest/ui@5.0.1(vitest@5.0.1))(typescript@7.0.2)(yaml@2.9.1)
 
-  packages/loorel:
+  packages/client:
     dependencies:
       '@runpod/ai-sdk-provider':
         specifier: 1.4.0
@@ -42,6 +45,9 @@ importers:
       ai:
         specifier: ^6
         version: 6.0.299(zod@4.6.5)
+
+  packages/define:
+    dependencies:
       valibot:
         specifier: ^1.5.0
         version: 1.5.0(typescript@7.0.2)

@@ -1,14 +1,12 @@
 {
-  "name": "loorel",
+  "name": "@loorel/client",
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/define.ts",
-    "./ai": "./src/ai.ts"
+    ".": "./src/index.ts"
   },
   "dependencies": {
     "@runpod/ai-sdk-provider": "1.4.0",
-    "ai": "^6",
-    "valibot": "^1.5.0"
+    "ai": "^6"
   }
 }

@@ -6,13 +6,15 @@
     "prepare": "vp config",
     "check": "vp check",
     "test": "vp test run",
-    "plan": "node packages/loorel/src/sync.ts --plan",
-    "apply": "node packages/loorel/src/sync.ts --apply",
-    "smoke": "node packages/loorel/src/smoke.ts"
+    "plan": "node packages/define/src/sync.ts --plan",
+    "apply": "node packages/define/src/sync.ts --apply",
+    "smoke": "node packages/client/src/smoke.ts",
+    "types": "node packages/define/src/types.ts"
   },
   "dependencies": {
-    "ai": "^6",
-    "loorel": "workspace:*"
+    "@loorel/client": "workspace:*",
+    "@loorel/define": "workspace:*",
+    "ai": "^6"
   },
   "devDependencies": {
     "@types/node": "22",

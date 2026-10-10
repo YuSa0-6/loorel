@@ -1,0 +1,11 @@
+{
+  "name": "@loorel/define",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/define.ts"
+  },
+  "dependencies": {
+    "valibot": "^1.5.0"
+  }
+}

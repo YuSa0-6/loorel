@@ -1,4 +1,4 @@
-import { defineEndpoint } from "loorel";
+import { defineEndpoint } from "@loorel/define";
 import model from "./model.config.ts";
 
 export default defineEndpoint({

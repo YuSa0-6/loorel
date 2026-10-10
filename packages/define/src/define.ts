@@ -1,4 +1,4 @@
-// Types and helpers imported as "loorel" by loorel.config.ts and endpoints/<name>/*.config.ts.
+// Types and helpers imported as "@loorel/define" by loorel.config.ts and endpoints/<name>/*.config.ts.
 // The define* functions return their argument unchanged: they exist so that the editor
 // checks and completes each definition. config.ts validates the values again at runtime.
 
@@ -45,6 +45,13 @@ export interface ModelDef {
   name: string;
   /** Hugging Face repository, for example "Qwen/Qwen3-8B". Set as MODEL_NAME. */
   source: string;
+  /**
+   * How callers talk to the model. Defaults to "openai" (chat completions through vLLM).
+   * "decision" is the System One request format of decision models such as Jev, Cloudflare
+   * Clef and Perplexity Decider: a state and typed questions in, probabilities out.
+   * A decision model needs an endpoint `image` whose worker serves that format.
+   */
+  api?: "openai" | "decision";
   /** vLLM worker env vars. Secret values do not belong here; use `secrets`. */
   vllm?: VllmEnv;
   /** env var name -> Runpod secret name. Runpod fills in the value when a worker boots. */
@@ -103,6 +110,11 @@ export interface EndpointDef {
     /** Most workers running at the same time. */
     max: number;
   };
+  /**
+   * Worker image with an exact tag, instead of defaults.image. Required for a decision model:
+   * its worker takes { input: <decision request> } on /runsync and returns the decision response.
+   */
+  image?: string;
   disk?: number;
   flashboot?: FlashBoot;
   timeout?: number;
