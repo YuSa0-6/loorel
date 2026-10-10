@@ -468,9 +468,16 @@ Secret の値を変えたときは、次に起動した worker から新しい�
 
 ```ts
 // endpoints/risk-check/model.config.ts
-export default defineModel({ name: "clef", source: "Cloudflare/clef", api: "decision" });
+import { defineModel } from "@loorel/define";
 
+export default defineModel({ name: "clef", source: "Cloudflare/clef", api: "decision" });
+```
+
+```ts
 // endpoints/risk-check/endpoint.config.ts
+import { defineEndpoint } from "@loorel/define";
+import model from "./model.config.ts";
+
 export default defineEndpoint({
   model,
   image: "your-registry/clef-worker:v1.0.0", // 決定 API を話す worker（下の約束を参照）
@@ -704,9 +711,13 @@ Runpod の AI SDK provider は、モデル ID をそのまま vLLM へのリク�
 ## 開発
 
 ```sh
-pnpm exec vp check     # 整形・lint・型チェック
-pnpm exec vp test run  # テスト
+pnpm exec vp check                       # 整形・lint・型チェック
+pnpm exec vp test run                    # テスト
+pnpm exec fallow dead-code               # 使われていないファイル・export・依存
+pnpm exec fallow audit --base origin/main  # 変えたファイルの複雑さ・重複
 ```
+
+Fallow の設定は `.fallowrc.jsonc` にあります。`import()` で読み込む設定ファイル（`loorel.config.ts`・`endpoints/*/endpoint.config.ts`）と、アプリ向けに生成する `loorel.gen.ts` を入口として登録しています。PR の CI（`plan.yml` の `check`）でも同じ 2 つを動かします。
 
 commit の前に `vp check --fix` が自動で動きます（`.vite-hooks/pre-commit`）。
 

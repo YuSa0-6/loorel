@@ -44,7 +44,7 @@ export const SECRET_KEY = /TOKEN|SECRET|PASSWORD|API_KEY|CREDENTIAL/i;
 // An env value that Runpod replaces with an account secret when a worker boots.
 // The value itself never passes through this repository.
 export const SECRET_REF = /^\{\{ RUNPOD_SECRET_(.+) \}\}$/;
-export const secretRef = (name: string) => `{{ RUNPOD_SECRET_${name} }}`;
+const secretRef = (name: string) => `{{ RUNPOD_SECRET_${name} }}`;
 // Set by sync from the model, so they cannot be written by hand.
 const SERVED_NAME_KEY = "OPENAI_SERVED_MODEL_NAME_OVERRIDE";
 const SOURCE_KEY = "MODEL_NAME";
