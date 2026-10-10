@@ -5,4 +5,8 @@
   "dynamicallyLoaded": ["loorel.config.ts", "endpoints/*/endpoint.config.ts", "loorel.gen.ts"],
   // The root keeps these for app code such as the README Quickstart, which is not in the repository.
   "ignoreDependencies": ["ai", "@loorel/client"],
+  // Complexity limits (cyclomatic 20, cognitive 15) apply to product code, not to tests and
+  // their fakes. CRAP is off: it needs coverage data, which these checks do not collect, and
+  // without it fallow only estimates coverage from imports.
+  "health": { "ignore": ["**/*.test.ts", "packages/*/src/testing/**"], "maxCrap": 0 },
 }

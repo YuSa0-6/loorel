@@ -11,16 +11,36 @@ export interface RemoteEndpoint {
   image?: string;
   disk?: number;
   env?: Record<string, string>;
-  gpu?: { pools: string[]; excludedTypes?: string[]; count?: number };
+  gpu?: {
+    pools: string[];
+    excludedTypes?: string[];
+    count?: number;
+    minCudaVersion?: string | null;
+  };
   workers: { min?: number; max?: number; idleTimeout?: number };
   scaling: Partial<EndpointSpec["scaling"]>;
   timeout: number;
   flashboot: EndpointSpec["flashboot"];
+  dataCenterIds?: string[];
+  networkVolumes?: string[];
 }
 
 export interface GpuType {
   id: string;
   pool: string | null;
+}
+
+/** A data center as returned by GET /v2/catalog/datacenters. */
+export interface DataCenter {
+  id: string;
+  name: string;
+}
+
+/** A network volume as returned by GET /v2/network-volumes. */
+export interface NetworkVolume {
+  id: string;
+  name: string;
+  dataCenter: string;
 }
 
 /** An account secret as returned by GET /v2/account/secrets. The value is never returned. */
@@ -40,6 +60,8 @@ export interface RunpodApi {
   listEndpoints(): Promise<RemoteEndpoint[]>;
   listGpuTypes(): Promise<GpuType[]>;
   listSecrets(): Promise<Secret[]>;
+  listDataCenters(): Promise<DataCenter[]>;
+  listNetworkVolumes(): Promise<NetworkVolume[]>;
   createEndpoint(spec: EndpointSpec): Promise<RemoteEndpoint>;
   updateEndpoint(id: string, patch: Record<string, unknown>): Promise<RemoteEndpoint>;
   deleteEndpoint(id: string): Promise<void>;
@@ -95,6 +117,13 @@ export function createRunpodApi(apiKey: string, fetchFn: typeof fetch = fetch): 
     },
     async listSecrets() {
       return (await call<{ secrets: Secret[] }>("GET", "/account/secrets")).secrets;
+    },
+    async listDataCenters() {
+      return (await call<{ dataCenters: DataCenter[] }>("GET", "/catalog/datacenters")).dataCenters;
+    },
+    async listNetworkVolumes() {
+      return (await call<{ networkVolumes: NetworkVolume[] }>("GET", "/network-volumes"))
+        .networkVolumes;
     },
     createEndpoint: (spec) => call("POST", "/serverless", spec),
     updateEndpoint: (id, patch) => call("PATCH", `/serverless/${encodeURIComponent(id)}`, patch),

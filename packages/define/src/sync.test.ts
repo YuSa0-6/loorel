@@ -127,14 +127,14 @@ describe("sync --plan", () => {
     [
       "an unknown GPU pool",
       qwen((e) => {
-        e.gpu.pools = ["ADA_99" as "ADA_24"];
+        e.gpu = { pools: ["ADA_99" as "ADA_24"], count: 1 };
       }),
       'unknown GPU pool "ADA_99"',
     ],
     [
       "an excluded type outside the pools",
       qwen((e) => {
-        e.gpu.excludedTypes = ["NVIDIA A100 80GB PCIe"];
+        e.gpu = { pools: ["ADA_24"], count: 1, excludedTypes: ["NVIDIA A100 80GB PCIe"] };
       }),
       'excludedTypes "NVIDIA A100 80GB PCIe" is not a GPU type in the selected pools',
     ],
@@ -514,5 +514,204 @@ describe("decision models", () => {
     const { code, output } = await run(root, fakeRunpod(), "--plan");
     expect(code).toBe(1);
     expect(output).toContain("a decision model needs type QUEUE");
+  });
+});
+
+describe("GPU types, data centers, network volumes and CUDA", () => {
+  const VOLUMES = [
+    { id: "vol-ro", name: "weights-ro", dataCenter: "EU-RO-1" },
+    { id: "vol-ro2", name: "weights-ro-2", dataCenter: "EU-RO-1" },
+    { id: "vol-tx", name: "weights-tx", dataCenter: "US-TX-3" },
+  ];
+  const placed = (edit: (e: EndpointDef) => void) =>
+    qwen((e) => {
+      e.dataCenters = ["EU-RO-1"];
+      e.networkVolumes = ["vol-ro"];
+      edit(e);
+    });
+
+  test("gpu.types becomes the pools that hold them, with every other type excluded", async () => {
+    const runpod = fakeRunpod();
+    const endpoint = qwen((e) => {
+      e.gpu = { types: ["NVIDIA GeForce RTX 4090"] };
+    });
+    const { code, output } = await run(await makeRepo({ "qwen3-8b": endpoint }), runpod, "--apply");
+    expect(code).toBe(0);
+    expect(output).toContain(
+      '+     gpu: {"pools":["ADA_24"],"excludedTypes":["NVIDIA L4"],"count":1}',
+    );
+    const body = writes(runpod)[0]?.body as { gpu: Record<string, unknown> };
+    // `types` is resolved before sending; Runpod only knows pools and excludedTypes.
+    expect(body.gpu).toStrictEqual({ pools: ["ADA_24"], excludedTypes: ["NVIDIA L4"], count: 1 });
+    expect(
+      (await run(await makeRepo({ "qwen3-8b": endpoint }), runpod, "--plan")).output,
+    ).toContain("1 unchanged");
+  });
+
+  test.each([
+    [{ types: ["NVIDIA H900"] }, 'unknown GPU type "NVIDIA H900"'],
+    [
+      { types: ["NVIDIA GeForce RTX 3070"] },
+      'GPU type "NVIDIA GeForce RTX 3070" is not offered on Serverless',
+    ],
+    [{ types: ["NVIDIA L4"], pools: ["ADA_24"] }, "set exactly one of gpu.pools and gpu.types"],
+    [
+      { types: ["NVIDIA L4"], excludedTypes: ["NVIDIA GeForce RTX 4090"] },
+      "gpu.excludedTypes goes with gpu.pools",
+    ],
+    [{ pools: ["ADA_24"], minCudaVersion: "12" }, 'CUDA versions are "major.minor"'],
+  ])("gpu %j is rejected", async (gpu, message) => {
+    const runpod = fakeRunpod();
+    const endpoint = qwen((e) => {
+      e.gpu = gpu as EndpointDef["gpu"];
+    });
+    const { code, output } = await run(await makeRepo({ "qwen3-8b": endpoint }), runpod, "--plan");
+    expect(code).toBe(1);
+    expect(output).toContain(message);
+    expect(writes(runpod)).toEqual([]);
+  });
+
+  test("data centers and network volumes are sent, and the next plan has no changes", async () => {
+    const runpod = fakeRunpod([], { volumes: VOLUMES });
+    const root = await makeRepo({ "qwen3-8b": placed(() => {}) });
+    const { code, output } = await run(root, runpod, "--apply");
+    expect(code).toBe(0);
+    expect(output).toContain('+     dataCenterIds: ["EU-RO-1"]');
+    expect(output).toContain('+     networkVolumes: ["vol-ro"]');
+    expect(writes(runpod)[0]?.body).toMatchObject({
+      dataCenterIds: ["EU-RO-1"],
+      networkVolumes: ["vol-ro"],
+    });
+    expect((await run(root, runpod, "--plan")).output).toContain("1 unchanged");
+  });
+
+  test.each([
+    [
+      "an unknown data center",
+      placed((e) => {
+        e.dataCenters = ["MARS-1"];
+        delete e.networkVolumes;
+      }),
+      'unknown data center "MARS-1" (known: EU-RO-1, US-TX-3)',
+    ],
+    [
+      "a volume that does not exist",
+      placed((e) => {
+        e.networkVolumes = ["vol-x"];
+      }),
+      'network volume "vol-x" does not exist (volumes: vol-ro (weights-ro, EU-RO-1)',
+    ],
+    [
+      "a volume outside the data centers",
+      placed((e) => {
+        e.networkVolumes = ["vol-tx"];
+      }),
+      'network volume "vol-tx" is in US-TX-3, which is not in dataCenters',
+    ],
+    [
+      "two volumes in one data center",
+      placed((e) => {
+        e.networkVolumes = ["vol-ro", "vol-ro2"];
+      }),
+      "two network volumes are in EU-RO-1; use one per data center",
+    ],
+  ])("%s stops the plan", async (_, endpoint, message) => {
+    const runpod = fakeRunpod([], { volumes: VOLUMES });
+    const { code, output } = await run(await makeRepo({ "qwen3-8b": endpoint }), runpod, "--plan");
+    expect(code).toBe(1);
+    expect(output).toContain(message);
+  });
+
+  test("without dataCenters, the data centers Runpod reports are left alone", async () => {
+    const runpod = fakeRunpod([syncedQwen({ dataCenterIds: ["US-TX-3", "EU-RO-1"] })]);
+    const { code, output } = await run(await makeRepo({ "qwen3-8b": QWEN }), runpod, "--plan");
+    expect(code).toBe(0);
+    expect(output).toContain("1 unchanged");
+  });
+
+  test("changing dataCenters sends only the new list", async () => {
+    const runpod = fakeRunpod([syncedQwen({ dataCenterIds: ["US-TX-3"] })]);
+    const endpoint = qwen((e) => {
+      e.dataCenters = ["EU-RO-1"];
+    });
+    const { code, output } = await run(await makeRepo({ "qwen3-8b": endpoint }), runpod, "--apply");
+    expect(code).toBe(0);
+    expect(output).toContain('!     dataCenterIds: ["US-TX-3"] -> ["EU-RO-1"]');
+    expect(writes(runpod)[0]?.body).toEqual({ dataCenterIds: ["EU-RO-1"] });
+  });
+
+  test("a key that may not list volumes gets a warning instead of an error", async () => {
+    const runpod = fakeRunpod([], { volumes: "forbidden" });
+    const { code, output } = await run(
+      await makeRepo({ "qwen3-8b": placed(() => {}) }),
+      runpod,
+      "--plan",
+    );
+    expect(code).toBe(0);
+    expect(output).toContain("cannot list network volumes");
+  });
+
+  test("endpoints without placement do not list data centers or volumes", async () => {
+    const runpod = fakeRunpod();
+    await run(await makeRepo({ "qwen3-8b": QWEN }), runpod, "--plan");
+    const paths = runpod.requests.map((r) => r.path);
+    expect(paths).not.toContain("/v2/catalog/datacenters");
+    expect(paths).not.toContain("/v2/network-volumes");
+  });
+
+  test("a CUDA floor from defaults is set with a gpu PATCH that keeps the pools", async () => {
+    const runpod = fakeRunpod([syncedQwen()]);
+    const root = await makeRepoWithFiles({
+      "loorel.config.ts": `export default { defaults: ${JSON.stringify({ ...DEFAULTS, minCudaVersion: "12.8" })} };\n`,
+      "endpoints/qwen3-8b/endpoint.config.ts": endpointFile(QWEN),
+    });
+    const { code, output } = await run(root, runpod, "--apply");
+    expect(code).toBe(0);
+    expect(output).toContain('!     gpu.minCudaVersion: (none) -> "12.8"');
+    expect(writes(runpod)).toEqual([
+      {
+        method: "PATCH",
+        path: "/v2/serverless/ep-qwen",
+        body: { gpu: { minCudaVersion: "12.8" } },
+      },
+    ]);
+    expect(runpod.endpoints[0]?.gpu?.pools).toEqual(["ADA_24"]);
+  });
+
+  test("removing the CUDA floor clears it with an empty string", async () => {
+    const runpod = fakeRunpod([
+      syncedQwen({ gpu: { ...syncedQwen().gpu!, minCudaVersion: "12.8" } }),
+    ]);
+    const { code } = await run(await makeRepo({ "qwen3-8b": QWEN }), runpod, "--apply");
+    expect(code).toBe(0);
+    expect(writes(runpod)[0]?.body).toEqual({ gpu: { minCudaVersion: "" } });
+  });
+
+  test("endpoint env overrides the model's vllm env", async () => {
+    const endpoint = qwen((e) => {
+      e.env = { MAX_MODEL_LEN: 4096, TENSOR_PARALLEL_SIZE: 2 };
+    });
+    const { code, output } = await run(
+      await makeRepo({ "qwen3-8b": endpoint }),
+      fakeRunpod(),
+      "--plan",
+    );
+    expect(code).toBe(0);
+    expect(output).toContain('+     env.MAX_MODEL_LEN: "4096"');
+    expect(output).toContain('+     env.TENSOR_PARALLEL_SIZE: "2"');
+  });
+
+  test("an env var set in both endpoint env and the model's secrets is rejected", async () => {
+    const endpoint = qwen((e) => {
+      e.model.secrets = { HF_TOKEN: "hf-token" };
+      e.env = { HF_TOKEN: "x" };
+    });
+    const { code, output } = await run(
+      await makeRepo({ "qwen3-8b": endpoint }),
+      fakeRunpod(),
+      "--plan",
+    );
+    expect(code).toBe(1);
+    expect(output).toContain("HF_TOKEN");
   });
 });
