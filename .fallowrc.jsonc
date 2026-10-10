@@ -1,0 +1,8 @@
+{
+  "$schema": "https://raw.githubusercontent.com/fallow-rs/fallow/main/schema.json",
+  // @loorel/define loads these with import() at runtime, so no static import reaches them.
+  // loorel.gen.ts is generated for apps to import; nothing in this repository imports it.
+  "dynamicallyLoaded": ["loorel.config.ts", "endpoints/*/endpoint.config.ts", "loorel.gen.ts"],
+  // The root keeps these for app code such as the README Quickstart, which is not in the repository.
+  "ignoreDependencies": ["ai", "@loorel/client"],
+}

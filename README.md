@@ -673,9 +673,13 @@ Runpod の AI SDK provider は、モデル ID をそのまま vLLM へのリク�
 ## 開発
 
 ```sh
-pnpm exec vp check     # 整形・lint・型チェック
-pnpm exec vp test run  # テスト
+pnpm exec vp check                       # 整形・lint・型チェック
+pnpm exec vp test run                    # テスト
+pnpm exec fallow dead-code               # 使われていないファイル・export・依存
+pnpm exec fallow audit --base origin/main  # 変えたファイルの複雑さ・重複
 ```
+
+Fallow の設定は `.fallowrc.jsonc` にあります。`import()` で読み込む設定ファイル（`loorel.config.ts`・`endpoints/*/endpoint.config.ts`）と、アプリ向けに生成する `loorel.gen.ts` を入口として登録しています。PR の CI（`plan.yml` の `check`）でも同じ 2 つを動かします。
 
 commit の前に `vp check --fix` が自動で動きます（`.vite-hooks/pre-commit`）。
 

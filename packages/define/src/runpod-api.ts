@@ -1,7 +1,7 @@
 // Minimal client for Runpod REST API v2 (https://api.runpod.io/v2/openapi.json).
 import type { EndpointSpec } from "./config.ts";
 
-export const RUNPOD_API = "https://api.runpod.io/v2";
+const RUNPOD_API = "https://api.runpod.io/v2";
 
 /** An endpoint as returned by GET /v2/serverless. Only the fields sync reads. */
 export interface RemoteEndpoint {
