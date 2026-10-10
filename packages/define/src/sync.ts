@@ -18,6 +18,7 @@ import {
   PlanError,
   referencedSecrets,
   renderPlan,
+  usesPlacement,
 } from "./plan.ts";
 import { createRunpodApi, type RunpodApi, RunpodError } from "./runpod-api.ts";
 
@@ -81,13 +82,17 @@ export async function sync({
   try {
     const specs = await loadSpecs(root);
     const api = createRunpodApi(apiKey, fetchFn);
-    const [remote, gpuTypes, known, secrets] = await Promise.all([
+    // Data centers and volumes are listed only when an endpoint uses them.
+    const placement = usesPlacement(specs);
+    const [remote, gpuTypes, known, secrets, dataCenters, volumes] = await Promise.all([
       api.listEndpoints(),
       api.listGpuTypes(),
       readEndpointIds(root),
       referencedSecrets(specs).length > 0 ? listSecretNames(api) : [],
+      placement ? api.listDataCenters() : undefined,
+      specs.some((s) => s.networkVolumes.length > 0) ? listVolumes(api) : undefined,
     ]);
-    const plan = makePlan(specs, remote, known, gpuTypes, secrets);
+    const plan = makePlan(specs, remote, known, { gpuTypes, secrets, dataCenters, volumes });
     emit(renderPlan(plan, { prune: values.prune }));
     if (values.plan) {
       await save();
@@ -170,15 +175,19 @@ async function apply(plan: Plan, api: RunpodApi, prune: boolean): Promise<ApplyR
   return result;
 }
 
-/** null when the key is not allowed to list secrets. */
-async function listSecretNames(api: RunpodApi): Promise<string[] | null> {
+/** null when the key is not allowed to list them. */
+async function orNullIfForbidden<T>(list: Promise<T>): Promise<T | null> {
   try {
-    return (await api.listSecrets()).map((s) => s.name);
+    return await list;
   } catch (e) {
     if (e instanceof RunpodError && e.status === 403) return null;
     throw e;
   }
 }
+
+const listSecretNames = async (api: RunpodApi) =>
+  (await orNullIfForbidden(api.listSecrets()))?.map((s) => s.name) ?? null;
+const listVolumes = (api: RunpodApi) => orNullIfForbidden(api.listNetworkVolumes());
 
 async function readEndpointIds(root: string): Promise<EndpointIds> {
   try {

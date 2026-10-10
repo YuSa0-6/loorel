@@ -87,6 +87,37 @@ export interface Defaults {
   scaling: Scaling;
   /** vLLM worker env vars shared by every model. */
   env?: VllmEnv;
+  /**
+   * Data centers workers may start in, for example "US-TX-3". Empty or unset lets Runpod choose.
+   * IDs: GET https://api.runpod.io/v2/catalog/datacenters
+   */
+  dataCenters?: string[];
+  /** Lowest CUDA driver version a worker host may have, as "major.minor" (for example "12.8"). */
+  minCudaVersion?: string;
+}
+
+interface GpuCommon {
+  /** GPUs per worker. Defaults to 1. */
+  count?: number;
+  /** Lowest CUDA driver version a worker host may have, as "major.minor". Overrides defaults. */
+  minCudaVersion?: string;
+}
+
+/** Pick GPUs by pool, optionally leaving some types out. */
+export interface GpuByPool extends GpuCommon {
+  /** Pools to start workers in, in order of preference. At least one. */
+  pools: [GpuPool, ...GpuPool[]];
+  /** GPU types inside the pools to leave out, for example "NVIDIA L4". */
+  excludedTypes?: string[];
+}
+
+/**
+ * Pick exact GPU types, for example "NVIDIA GeForce RTX 4090". The plan turns them into the
+ * pools that hold them and excludes every other type in those pools.
+ * IDs: GET https://api.runpod.io/v2/catalog/gpus
+ */
+export interface GpuByType extends GpuCommon {
+  types: [string, ...string[]];
 }
 
 /**
@@ -96,14 +127,7 @@ export interface Defaults {
 export interface EndpointDef {
   /** Usually imported from ./model.config.ts, or from another endpoint's directory. */
   model: ModelDef;
-  gpu: {
-    /** Pools to start workers in, in order of preference. At least one. */
-    pools: [GpuPool, ...GpuPool[]];
-    /** GPU types inside the pools to leave out, for example "NVIDIA L4". */
-    excludedTypes?: string[];
-    /** GPUs per worker. Defaults to 1. */
-    count?: number;
-  };
+  gpu: GpuByPool | GpuByType;
   workers: {
     /** Workers kept running. 0 means nothing is billed while idle. */
     min: number;
@@ -115,6 +139,16 @@ export interface EndpointDef {
    * its worker takes { input: <decision request> } on /runsync and returns the decision response.
    */
   image?: string;
+  /** Env vars for this endpoint only, on top of defaults.env and the model's vllm. */
+  env?: VllmEnv;
+  /** Data centers for this endpoint, instead of defaults.dataCenters. */
+  dataCenters?: string[];
+  /**
+   * Network volume IDs mounted at /runpod-volume, for example to keep model weights between
+   * cold starts. At most one per data center, and each must be in one of `dataCenters` when set.
+   * IDs: GET https://api.runpod.io/v2/network-volumes
+   */
+  networkVolumes?: string[];
   disk?: number;
   flashboot?: FlashBoot;
   timeout?: number;
