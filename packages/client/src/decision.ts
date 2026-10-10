@@ -226,10 +226,12 @@ export function createLoorelDecider(options: LoorelDeciderOptions) {
     let job = await call("/runsync", {
       input: { model: options.model, ...rest, ...(images ? { images } : {}) },
     });
-    while ((job.status === "IN_QUEUE" || job.status === "IN_PROGRESS") && job.id) {
+    // Status responses may leave out the id, so keep the one /runsync returned.
+    const jobId = job.id;
+    while ((job.status === "IN_QUEUE" || job.status === "IN_PROGRESS") && jobId) {
       await new Promise((resolve) => setTimeout(resolve, pollMs));
       if (signal.aborted) throw new DecisionError(`no answer within ${timeoutMs} ms`, "timeout");
-      job = await call(`/status/${encodeURIComponent(job.id)}`);
+      job = await call(`/status/${encodeURIComponent(jobId)}`);
     }
     if (job.status !== "COMPLETED") {
       throw new DecisionError(`the job ended with status ${job.status ?? "unknown"}`, "job_failed");

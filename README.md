@@ -433,9 +433,16 @@ Secret の値を変えたときは、次に起動した worker から新しい�
 
 ```ts
 // endpoints/risk-check/model.config.ts
-export default defineModel({ name: "clef", source: "Cloudflare/clef", api: "decision" });
+import { defineModel } from "@loorel/define";
 
+export default defineModel({ name: "clef", source: "Cloudflare/clef", api: "decision" });
+```
+
+```ts
 // endpoints/risk-check/endpoint.config.ts
+import { defineEndpoint } from "@loorel/define";
+import model from "./model.config.ts";
+
 export default defineEndpoint({
   model,
   image: "your-registry/clef-worker:v1.0.0", // 決定 API を話す worker（下の約束を参照）

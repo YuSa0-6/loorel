@@ -106,6 +106,22 @@ describe("createLoorelDecider", () => {
     ]);
   });
 
+  test("keeps polling with the /runsync job ID when a status response has no id", async () => {
+    const { calls, fetch } = fakeFetch(
+      { body: { id: "job1", status: "IN_QUEUE" } },
+      { body: { status: "IN_PROGRESS" } },
+      { body: { status: "COMPLETED", output: OUTPUT } },
+    );
+    const decide = createLoorelDecider({ ...BASE, fetch, pollMs: 0 });
+    const result = await decide({ state: STATE, questions: QUESTIONS });
+    expect(result.model).toBe("clef");
+    expect(calls.map((c) => c.url)).toEqual([
+      "https://api.runpod.ai/v2/ep-clef/runsync",
+      "https://api.runpod.ai/v2/ep-clef/status/job1",
+      "https://api.runpod.ai/v2/ep-clef/status/job1",
+    ]);
+  });
+
   test("images are sent only when given", async () => {
     const { calls, fetch } = fakeFetch({ body: { id: "j", status: "COMPLETED", output: OUTPUT } });
     await createLoorelDecider({ ...BASE, fetch })({
