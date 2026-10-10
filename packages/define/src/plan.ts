@@ -1,7 +1,7 @@
 // Compares endpoints/*/endpoint.config.ts with the endpoints on Runpod and renders the result.
 import { isDeepStrictEqual } from "node:util";
 import { type EndpointSpec, SECRET_KEY, SECRET_REF } from "./config.ts";
-import type { GpuType, RemoteEndpoint } from "./runpod-api.ts";
+import type { DataCenter, GpuType, NetworkVolume, RemoteEndpoint } from "./runpod-api.ts";
 
 export interface Change {
   field: string;
@@ -34,18 +34,32 @@ export function referencedSecrets(specs: EndpointSpec[]): string[] {
   return [...new Set(names)].sort();
 }
 
-/**
- * `secrets` holds the account's secret names, or null when the key may not list them
- * (the plan then warns instead of checking).
- */
+/** What the plan checks the specs against. Lists left out are not checked. */
+export interface Catalog {
+  gpuTypes: GpuType[];
+  /** Account secret names, or null when the key may not list them (the plan then warns). */
+  secrets?: string[] | null;
+  dataCenters?: DataCenter[];
+  /** Network volumes, or null when the key may not list them (the plan then warns). */
+  volumes?: NetworkVolume[] | null;
+}
+
+/** True when any spec picks data centers or network volumes, so the plan needs those lists. */
+export const usesPlacement = (specs: EndpointSpec[]) =>
+  specs.some((s) => s.dataCenterIds.length > 0 || s.networkVolumes.length > 0);
+
 export function makePlan(
   specs: EndpointSpec[],
   remote: RemoteEndpoint[],
   known: EndpointIds,
-  gpuTypes: GpuType[],
-  secrets: string[] | null = [],
+  { gpuTypes, secrets = [], dataCenters, volumes }: Catalog,
 ): Plan {
+  const typeErrors: string[] = [];
+  specs = specs.map((s) => resolveGpuTypes(s, gpuTypes, typeErrors));
+  if (typeErrors.length > 0) throw new PlanError(typeErrors.join("\n"));
+
   const errors = specs.flatMap((s) => checkGpu(s, gpuTypes));
+  errors.push(...checkPlacement(specs, dataCenters, volumes));
   const missing = secrets && referencedSecrets(specs).filter((n) => !secrets.includes(n));
   for (const name of missing ?? []) {
     errors.push(
@@ -88,7 +102,76 @@ export function makePlan(
   if (secrets === null && referencedSecrets(specs).length > 0) {
     warnings.push("the API key cannot list Runpod secrets, so their existence was not checked");
   }
+  if (volumes === null && specs.some((s) => s.networkVolumes.length > 0)) {
+    warnings.push("the API key cannot list network volumes, so they were not checked");
+  }
   return { actions, warnings };
+}
+
+/** gpu.types -> the pools that hold them, excluding every other type in those pools. */
+function resolveGpuTypes(spec: EndpointSpec, gpuTypes: GpuType[], errors: string[]): EndpointSpec {
+  const { types, ...gpu } = spec.gpu;
+  if (!types) return spec;
+  const byId = new Map(gpuTypes.map((g) => [g.id, g]));
+  const pools: string[] = [];
+  for (const t of types) {
+    const pool = byId.get(t)?.pool;
+    if (!byId.has(t)) {
+      errors.push(`${spec.name}: unknown GPU type "${t}" (IDs: GET /v2/catalog/gpus)`);
+    } else if (!pool) {
+      errors.push(`${spec.name}: GPU type "${t}" is not offered on Serverless`);
+    } else if (!pools.includes(pool)) {
+      pools.push(pool);
+    }
+  }
+  const excludedTypes = gpuTypes
+    .filter((g) => g.pool && pools.includes(g.pool) && !types.includes(g.id))
+    .map((g) => g.id)
+    .sort();
+  return { ...spec, gpu: { ...gpu, pools, excludedTypes } };
+}
+
+function checkPlacement(
+  specs: EndpointSpec[],
+  dataCenters: DataCenter[] | undefined,
+  volumes: NetworkVolume[] | null | undefined,
+): string[] {
+  const errors: string[] = [];
+  const knownDcs = dataCenters && new Set(dataCenters.map((d) => d.id));
+  const byId = new Map((volumes ?? []).map((v) => [v.id, v]));
+  for (const s of specs) {
+    for (const dc of s.dataCenterIds) {
+      if (knownDcs && !knownDcs.has(dc)) {
+        errors.push(
+          `${s.name}: unknown data center "${dc}" (known: ${[...knownDcs].sort().join(", ")})`,
+        );
+      }
+    }
+    if (!volumes) continue;
+    const usedDcs = new Set<string>();
+    for (const id of s.networkVolumes) {
+      const vol = byId.get(id);
+      if (!vol) {
+        const list = volumes.map((v) => `${v.id} (${v.name}, ${v.dataCenter})`).join(", ");
+        errors.push(
+          `${s.name}: network volume "${id}" does not exist (volumes: ${list || "none"})`,
+        );
+        continue;
+      }
+      if (s.dataCenterIds.length > 0 && !s.dataCenterIds.includes(vol.dataCenter)) {
+        errors.push(
+          `${s.name}: network volume "${id}" is in ${vol.dataCenter}, which is not in dataCenters`,
+        );
+      }
+      if (usedDcs.has(vol.dataCenter)) {
+        errors.push(
+          `${s.name}: two network volumes are in ${vol.dataCenter}; use one per data center`,
+        );
+      }
+      usedDcs.add(vol.dataCenter);
+    }
+  }
+  return errors;
 }
 
 function checkGpu(spec: EndpointSpec, gpuTypes: GpuType[]): string[] {
@@ -142,8 +225,13 @@ function diff(
     sorted(spec.gpu.excludedTypes),
   );
   const countChanged = compare("gpu.count", r.gpu?.count ?? 1, spec.gpu.count);
-  if (poolsChanged || excludedChanged) patch.gpu = spec.gpu;
-  else if (countChanged) patch.gpu = { count: spec.gpu.count };
+  // Runpod returns null or "" for no floor; PATCH clears it with "".
+  const cuda = spec.gpu.minCudaVersion;
+  const cudaChanged = compare("gpu.minCudaVersion", r.gpu?.minCudaVersion || undefined, cuda);
+  const cudaPatch = cudaChanged ? { minCudaVersion: cuda ?? "" } : {};
+  if (poolsChanged || excludedChanged) patch.gpu = { ...spec.gpu, ...cudaPatch };
+  else if (countChanged || cudaChanged)
+    patch.gpu = { ...(countChanged ? { count: spec.gpu.count } : {}), ...cudaPatch };
 
   const workerChanges = (["min", "max", "idleTimeout"] as const).map((k) =>
     compare(`workers.${k}`, r.workers?.[k], spec.workers[k]),
@@ -155,6 +243,15 @@ function diff(
   );
   if (compare("scaling", remoteScaling, spec.scaling)) patch.scaling = spec.scaling;
   if (compare("timeout", r.timeout, spec.timeout)) patch.timeout = spec.timeout;
+  // Empty means "let Runpod choose"; Runpod may report the data centers it picked, so an
+  // empty list is not compared.
+  if (
+    spec.dataCenterIds.length > 0 &&
+    compare("dataCenterIds", sorted(r.dataCenterIds), sorted(spec.dataCenterIds))
+  )
+    patch.dataCenterIds = spec.dataCenterIds;
+  if (compare("networkVolumes", sorted(r.networkVolumes), sorted(spec.networkVolumes)))
+    patch.networkVolumes = spec.networkVolumes;
   if (compare("flashboot", r.flashboot, spec.flashboot)) patch.flashboot = spec.flashboot;
 
   return { changes, patch };
@@ -178,6 +275,8 @@ export function renderPlan(plan: Plan, { prune }: { prune: boolean }): string {
         lines.push(`+ create ${a.name}`);
         const { name: _, ...fields } = a.spec;
         for (const [k, v] of Object.entries(fields)) {
+          // Empty lists mean "any data center" and "no volume"; leave them out of the plan.
+          if (Array.isArray(v) && v.length === 0) continue;
           if (k === "env")
             for (const [ek, ev] of Object.entries(v))
               lines.push(`+     env.${ek}: ${show(`env.${ek}`, ev)}`);

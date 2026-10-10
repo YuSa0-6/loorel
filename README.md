@@ -319,22 +319,57 @@ flowchart LR
 
 `defineEndpoint` で書きます。書いていない項目は [loorel.config.ts](#loorelconfigts) の `defaults` の値になります。
 
-| 項目                | 必須 | 既定値   | 意味                                                            |
-| ------------------- | ---- | -------- | --------------------------------------------------------------- |
-| `model`             | 必須 | —        | `defineModel` の値。ふつうは `./model.config.ts` を import する |
-| `gpu.pools`         | 必須 | —        | GPU プール ID の一覧（例 `ADA_24`）。空きがあるプールで起動する |
-| `gpu.excludedTypes` | 任意 | `[]`     | プールから外す GPU の型（例 `NVIDIA L4`）                       |
-| `gpu.count`         | 任意 | `1`      | 1 ワーカーあたりの GPU 数                                       |
-| `workers.min`       | 必須 | —        | 常に起動しておく数。`0` なら待機中は課金なし                    |
-| `workers.max`       | 必須 | —        | 同時に起動する上限                                              |
-| `image`             | 任意 | defaults | worker のイメージ（タグ固定）。決定モデルでは必須               |
-| `disk`              | 任意 | defaults | コンテナのディスク（GB）。モデルはここに落とす                  |
-| `idleTimeout`       | 任意 | defaults | 何秒使われなければワーカーを止めるか                            |
-| `timeout`           | 任意 | defaults | 1 リクエストの上限（ミリ秒）                                    |
-| `scaling`           | 任意 | defaults | ワーカーを増やす条件                                            |
-| `flashboot`         | 任意 | defaults | 起動を速くする Runpod の機能                                    |
+| 項目                 | 必須                   | 既定値   | 意味                                                                                                   |
+| -------------------- | ---------------------- | -------- | ------------------------------------------------------------------------------------------------------ |
+| `model`              | 必須                   | —        | `defineModel` の値。ふつうは `./model.config.ts` を import する                                        |
+| `gpu.pools`          | `gpu.types` とどちらか | —        | GPU プール ID の一覧（例 `ADA_24`）。空きがあるプールで起動する                                        |
+| `gpu.types`          | `gpu.pools` とどちらか | —        | GPU の型の一覧（例 `NVIDIA GeForce RTX 4090`）。plan がプールと `excludedTypes` に直す                 |
+| `gpu.excludedTypes`  | 任意                   | `[]`     | プールから外す GPU の型（例 `NVIDIA L4`）。`gpu.pools` のときだけ                                      |
+| `gpu.count`          | 任意                   | `1`      | 1 ワーカーあたりの GPU 数                                                                              |
+| `gpu.minCudaVersion` | 任意                   | defaults | worker を置くホストの CUDA ドライバーの下限（例 `"12.8"`）                                             |
+| `workers.min`        | 必須                   | —        | 常に起動しておく数。`0` なら待機中は課金なし                                                           |
+| `workers.max`        | 必須                   | —        | 同時に起動する上限                                                                                     |
+| `image`              | 任意                   | defaults | worker のイメージ（タグ固定）。決定モデルでは必須                                                      |
+| `env`                | 任意                   | `{}`     | このエンドポイントだけの環境変数。モデルの `vllm` より優先される                                       |
+| `dataCenters`        | 任意                   | defaults | worker を起動するデータセンター（例 `EU-RO-1`）。空なら Runpod が選び、plan はデータセンターを比べない |
+| `networkVolumes`     | 任意                   | `[]`     | `/runpod-volume` にマウントするネットワークボリュームの ID。データセンター 1 つにつき 1 つまで         |
+| `disk`               | 任意                   | defaults | コンテナのディスク（GB）。モデルはここに落とす                                                         |
+| `idleTimeout`        | 任意                   | defaults | 何秒使われなければワーカーを止めるか                                                                   |
+| `timeout`            | 任意                   | defaults | 1 リクエストの上限（ミリ秒）                                                                           |
+| `scaling`            | 任意                   | defaults | ワーカーを増やす条件                                                                                   |
+| `flashboot`          | 任意                   | defaults | 起動を速くする Runpod の機能                                                                           |
 
 `gpu.pools` に使えるのは Runpod の 8 つのプール ID（`AMPERE_16`〜`HOPPER_141`）です。それ以外を書くとエディタが型エラーで知らせます。
+
+特定の GPU だけで動かしたいときは、`gpu.types` に型を並べます。plan が Runpod のカタログを見て、その型を含むプールを選び、同じプールの他の型を `excludedTypes` に入れます。
+
+```ts
+gpu: { types: ["NVIDIA GeForce RTX 4090"] },
+// plan の表示: gpu: {"pools":["ADA_24"],"excludedTypes":["NVIDIA L4"],"count":1}
+```
+
+#### モデルの重みをネットワークボリュームに置く
+
+コールドスタートのたびにモデルをダウンロードし直さないように、Runpod のネットワークボリュームを `/runpod-volume` にマウントできます。ボリュームはデータセンターに属するので、`dataCenters` と合わせて書きます。
+
+```ts
+export default defineEndpoint({
+  model,
+  gpu: { pools: ["ADA_24"] },
+  workers: { min: 0, max: 2 },
+  dataCenters: ["EU-RO-1"],
+  networkVolumes: ["agv6w2qcg7"], // Runpod コンソールで作ったボリュームの ID
+});
+```
+
+vLLM worker は、Hugging Face のキャッシュとモデルを `/runpod-volume`（ビルド引数 `BASE_PATH` の既定値）に置きます。そのため、ボリュームを付けるだけで、2 回目以降の起動ではダウンロード済みの重みを使えます。
+
+| plan が確かめること                                                            | 調べ方                        |
+| ------------------------------------------------------------------------------ | ----------------------------- |
+| データセンター ID が存在する                                                   | `GET /v2/catalog/datacenters` |
+| ボリュームが存在する、`dataCenters` の中にある、データセンター 1 つにつき 1 つ | `GET /v2/network-volumes`     |
+
+データセンターとボリュームの一覧は、使うエンドポイントがあるときだけ読みます。キーにボリュームを読む権限がない場合、plan は警告を出して確認を省きます。
 
 ### model.config.ts
 
@@ -480,16 +515,18 @@ vLLM は決定モデルを配信できないので、`image` に決定 API を�
 
 全エンドポイント共通の設定を `defineConfig({ defaults })` で書きます。Runpod のテンプレートのかわりにリポジトリで持ちます。
 
-| 項目          | 今の値                          | 意味                                               |
-| ------------- | ------------------------------- | -------------------------------------------------- |
-| `image`       | `runpod/worker-v1-vllm:v2.27.2` | vLLM worker のイメージ。タグは必ず固定する         |
-| `type`        | `QUEUE`                         | キュー型。`/run`・`/status`・`/openai/v1` が使える |
-| `disk`        | `50`                            | コンテナのディスク（GB）                           |
-| `flashboot`   | `FLASHBOOT`                     | 起動を速くする Runpod の機能                       |
-| `timeout`     | `600000`                        | 1 リクエストの上限（ミリ秒）                       |
-| `idleTimeout` | `5`                             | 何秒使われなければワーカーを止めるか               |
-| `scaling`     | `QUEUE_DELAY 4`                 | キューの待ち時間でワーカーを増やす                 |
-| `env`         | 2 件                            | 全モデル共通の vLLM 環境変数                       |
+| 項目             | 今の値                          | 意味                                                              |
+| ---------------- | ------------------------------- | ----------------------------------------------------------------- |
+| `image`          | `runpod/worker-v1-vllm:v2.27.2` | vLLM worker のイメージ。タグは必ず固定する                        |
+| `type`           | `QUEUE`                         | キュー型。`/run`・`/status`・`/openai/v1` が使える                |
+| `disk`           | `50`                            | コンテナのディスク（GB）                                          |
+| `flashboot`      | `FLASHBOOT`                     | 起動を速くする Runpod の機能                                      |
+| `timeout`        | `600000`                        | 1 リクエストの上限（ミリ秒）                                      |
+| `idleTimeout`    | `5`                             | 何秒使われなければワーカーを止めるか                              |
+| `scaling`        | `QUEUE_DELAY 4`                 | キューの待ち時間でワーカーを増やす                                |
+| `env`            | 2 件                            | 全モデル共通の vLLM 環境変数                                      |
+| `dataCenters`    | なし（Runpod が選ぶ）           | 全エンドポイント共通のデータセンター                              |
+| `minCudaVersion` | なし                            | CUDA ドライバーの下限。古いホストで vLLM が起動に失敗するのを防ぐ |
 
 ### apply
 
@@ -535,16 +572,17 @@ RUNPOD_API_KEY=... pnpm apply --out apply.md
 
 plan が止める設定:
 
-| こうなっていたら                                        | 理由                                                            |
-| ------------------------------------------------------- | --------------------------------------------------------------- |
-| 知らない GPU プール                                     | Runpod のカタログ（`/v2/catalog/gpus`）にないものは起動できない |
-| プール外の `excludedTypes`、全部を外す指定              | Runpod が 400 を返す、または GPU が 0 種類になる                |
-| `TOKEN`・`SECRET`・`API_KEY` などを含む env             | 値が PR コメントに出てしまうため設定ファイルには書かない        |
-| Runpod にない Secret 名を `secrets` で参照              | worker の起動時に値が入らない                                   |
-| 同じ環境変数を `vllm` と `secrets` の両方に書く         | どちらの値を使うか決められない                                  |
-| `source` が空、`min` > `max`                            | ワーカーが起動できない                                          |
-| 知らない項目名、`endpoint.config.ts` のないディレクトリ | 書き間違いを早めに見つける                                      |
-| Runpod 側に同じ名前のエンドポイントが 2 つ              | どちらを更新するか決められない                                  |
+| こうなっていたら                                                                                              | 理由                                                            |
+| ------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| 知らない GPU プール・GPU の型、Serverless にない型                                                            | Runpod のカタログ（`/v2/catalog/gpus`）にないものは起動できない |
+| 知らないデータセンター、ないボリューム、`dataCenters` の外のボリューム、同じデータセンターに 2 つのボリューム | worker が起動できない、またはボリュームをマウントできない       |
+| プール外の `excludedTypes`、全部を外す指定                                                                    | Runpod が 400 を返す、または GPU が 0 種類になる                |
+| `TOKEN`・`SECRET`・`API_KEY` などを含む env                                                                   | 値が PR コメントに出てしまうため設定ファイルには書かない        |
+| Runpod にない Secret 名を `secrets` で参照                                                                    | worker の起動時に値が入らない                                   |
+| 同じ環境変数を `vllm` と `secrets` の両方に書く                                                               | どちらの値を使うか決められない                                  |
+| `source` が空、`min` > `max`                                                                                  | ワーカーが起動できない                                          |
+| 知らない項目名、`endpoint.config.ts` のないディレクトリ                                                       | 書き間違いを早めに見つける                                      |
+| Runpod 側に同じ名前のエンドポイントが 2 つ                                                                    | どちらを更新するか決められない                                  |
 
 終了コードは `0` が成功、`1` が設定または API のエラー、`2` が使い方の誤りです。Runpod 側の値でも、秘密らしい名前の env は `(hidden)` と表示します。
 

@@ -18,11 +18,21 @@ export interface EndpointSpec {
   image: string;
   disk: number;
   env: Record<string, string>;
-  gpu: { pools: string[]; excludedTypes: string[]; count: number };
+  gpu: {
+    pools: string[];
+    excludedTypes: string[];
+    count: number;
+    minCudaVersion?: string;
+    /** Exact GPU types from the config. The plan turns them into pools and excludedTypes. */
+    types?: string[];
+  };
   workers: { min: number; max: number; idleTimeout?: number };
   scaling: Scaling;
   timeout: number;
   flashboot: FlashBoot;
+  /** Empty lets Runpod choose. */
+  dataCenterIds: string[];
+  networkVolumes: string[];
 }
 
 const CONFIG_FILE = "loorel.config.ts";
@@ -105,6 +115,9 @@ const Secrets = v.record(
 
 const Image = v.pipe(v.string(), v.regex(/:[\w.-]+$/, "image must have an explicit tag"));
 
+const CudaVersion = v.pipe(v.string(), v.regex(/^\d+\.\d+$/, 'CUDA versions are "major.minor"'));
+const DataCenters = v.array(v.pipe(v.string(), v.nonEmpty()));
+
 const Defaults = v.strictObject({
   image: Image,
   type: v.picklist(["QUEUE", "LOAD_BALANCER"]),
@@ -114,6 +127,8 @@ const Defaults = v.strictObject({
   idleTimeout: IdleTimeout,
   scaling: ScalingSchema,
   env: v.optional(Env, {}),
+  dataCenters: v.optional(DataCenters, []),
+  minCudaVersion: v.optional(CudaVersion),
 });
 
 const Model = v.pipe(
@@ -133,16 +148,31 @@ const Model = v.pipe(
 const Endpoint = v.pipe(
   v.strictObject({
     model: Model,
-    gpu: v.strictObject({
-      pools: v.pipe(v.array(v.string()), v.minLength(1)),
-      excludedTypes: v.optional(v.array(v.string()), []),
-      count: v.optional(PositiveInt, 1),
-    }),
+    gpu: v.pipe(
+      v.strictObject({
+        pools: v.optional(v.pipe(v.array(v.string()), v.minLength(1))),
+        types: v.optional(v.pipe(v.array(v.pipe(v.string(), v.nonEmpty())), v.minLength(1))),
+        excludedTypes: v.optional(v.array(v.string()), []),
+        count: v.optional(PositiveInt, 1),
+        minCudaVersion: v.optional(CudaVersion),
+      }),
+      v.check(
+        (g) => (g.pools === undefined) !== (g.types === undefined),
+        "set exactly one of gpu.pools and gpu.types",
+      ),
+      v.check(
+        (g) => g.types === undefined || g.excludedTypes.length === 0,
+        "gpu.excludedTypes goes with gpu.pools; gpu.types already lists every type to use",
+      ),
+    ),
     workers: v.strictObject({
       min: v.pipe(v.number(), v.integer(), v.minValue(0)),
       max: PositiveInt,
     }),
     image: v.optional(Image),
+    env: v.optional(Env, {}),
+    dataCenters: v.optional(DataCenters),
+    networkVolumes: v.optional(v.array(v.pipe(v.string(), v.nonEmpty()))),
     disk: v.optional(PositiveInt),
     flashboot: v.optional(FlashBootSchema),
     timeout: v.optional(PositiveInt),
@@ -154,6 +184,10 @@ const Endpoint = v.pipe(
   v.check(
     (e) => e.model.api !== "decision" || e.image !== undefined,
     "a decision model needs a worker image that serves the decision API; set image",
+  ),
+  v.check(
+    (e) => Object.keys(e.model.secrets).every((k) => !(k in e.env)),
+    "an env var is set in both env and the model's secrets",
   ),
 );
 
@@ -255,6 +289,7 @@ export async function loadEndpoints(root: string): Promise<LoadedEndpoint[]> {
       Object.entries(model.secrets).map(([k, secret]) => [k, secretRef(secret)]),
     );
     const scaling = e.scaling ?? defaults.scaling;
+    const cuda = e.gpu.minCudaVersion ?? defaults.minCudaVersion;
     endpoints.push({
       name,
       api: model.api,
@@ -268,10 +303,17 @@ export async function loadEndpoints(root: string): Promise<LoadedEndpoint[]> {
           ...defaults.env,
           [SOURCE_KEY]: model.source,
           ...model.vllm,
+          ...e.env,
           ...refs,
           [SERVED_NAME_KEY]: model.name,
         },
-        gpu: { pools: e.gpu.pools, excludedTypes: e.gpu.excludedTypes, count: e.gpu.count },
+        gpu: {
+          pools: e.gpu.pools ?? [],
+          excludedTypes: e.gpu.excludedTypes,
+          count: e.gpu.count,
+          ...(e.gpu.types ? { types: e.gpu.types } : {}),
+          ...(cuda ? { minCudaVersion: cuda } : {}),
+        },
         workers: {
           min: e.workers.min,
           max: e.workers.max,
@@ -283,6 +325,8 @@ export async function loadEndpoints(root: string): Promise<LoadedEndpoint[]> {
         scaling,
         timeout: e.timeout ?? defaults.timeout,
         flashboot: e.flashboot ?? defaults.flashboot,
+        dataCenterIds: e.dataCenters ?? defaults.dataCenters,
+        networkVolumes: e.networkVolumes ?? [],
       },
     });
   }

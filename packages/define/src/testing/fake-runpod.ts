@@ -1,6 +1,6 @@
 // In-memory Runpod REST API v2 for tests. Follows the documented PATCH rules:
 // top-level fields are replaced, and gpu.pools replaces pools and excludedTypes together.
-import type { GpuType, RemoteEndpoint } from "../runpod-api.ts";
+import type { DataCenter, GpuType, NetworkVolume, RemoteEndpoint } from "../runpod-api.ts";
 
 export interface FakeRunpod {
   endpoints: RemoteEndpoint[];
@@ -15,15 +15,22 @@ export const GPU_TYPES: GpuType[] = [
   { id: "NVIDIA GeForce RTX 3070", pool: null },
 ];
 
+const DATA_CENTERS: DataCenter[] = [
+  { id: "US-TX-3", name: "US Texas 3" },
+  { id: "EU-RO-1", name: "Europe Romania 1" },
+];
+
 export interface FakeOptions {
   pageSize?: number;
+  /** Network volumes on the account, or "forbidden" for a key that may not list them. */
+  volumes?: NetworkVolume[] | "forbidden";
   /** Account secret names, or "forbidden" for a key that may not list them. */
   secrets?: string[] | "forbidden";
 }
 
 export function fakeRunpod(
   endpoints: RemoteEndpoint[] = [],
-  { pageSize = 2, secrets = [] }: FakeOptions = {},
+  { pageSize = 2, secrets = [], volumes = [] }: FakeOptions = {},
 ): FakeRunpod {
   const state: FakeRunpod = {
     endpoints: structuredClone(endpoints),
@@ -48,6 +55,13 @@ export function fakeRunpod(
 
     const route = url.pathname.replace(/^\/v2/, "");
     if (method === "GET" && route === "/catalog/gpus") return json(200, { gpus: GPU_TYPES });
+    if (method === "GET" && route === "/catalog/datacenters")
+      return json(200, { dataCenters: DATA_CENTERS });
+    if (method === "GET" && route === "/network-volumes") {
+      if (volumes === "forbidden")
+        return json(403, { title: "Forbidden", status: 403, detail: "insufficient scope" });
+      return json(200, { networkVolumes: volumes });
+    }
     if (method === "GET" && route === "/account/secrets") {
       if (secrets === "forbidden")
         return json(403, { title: "Forbidden", status: 403, detail: "insufficient scope" });
@@ -78,7 +92,12 @@ export function fakeRunpod(
     const current = state.endpoints[index]!;
     if (method === "PATCH") {
       const gpu = body.gpu?.pools
-        ? { excludedTypes: [], count: current.gpu?.count, ...body.gpu }
+        ? {
+            excludedTypes: [],
+            count: current.gpu?.count,
+            minCudaVersion: current.gpu?.minCudaVersion,
+            ...body.gpu,
+          }
         : { ...current.gpu, ...body.gpu };
       state.endpoints[index] = { ...current, ...body, gpu };
       return json(200, state.endpoints[index]);
