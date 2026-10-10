@@ -2,6 +2,7 @@
 import type { EndpointSpec } from "./config.ts";
 
 const RUNPOD_API = "https://api.runpod.io/v2";
+const RUNPOD_INFERENCE_API = "https://api.runpod.ai/v2";
 
 /** An endpoint as returned by GET /v2/serverless. Only the fields sync reads. */
 export interface RemoteEndpoint {
@@ -65,12 +66,25 @@ export interface RunpodApi {
   createEndpoint(spec: EndpointSpec): Promise<RemoteEndpoint>;
   updateEndpoint(id: string, patch: Record<string, unknown>): Promise<RemoteEndpoint>;
   deleteEndpoint(id: string): Promise<void>;
+  /** Inference API health; worker counts do not prove the model can serve. */
+  getEndpointHealth(id: string): Promise<{ workers: { ready?: number; running: number } }>;
+  getEndpoint(id: string): Promise<RemoteEndpoint>;
 }
 
-export function createRunpodApi(apiKey: string, fetchFn: typeof fetch = fetch): RunpodApi {
-  async function call<T>(method: string, pathAndQuery: string, body?: unknown): Promise<T> {
+export function createRunpodApi(
+  apiKey: string,
+  fetchFn: typeof fetch = fetch,
+  { retryReads = true }: { retryReads?: boolean } = {},
+): RunpodApi {
+  // fallow-ignore-next-line complexity
+  async function call<T>(
+    method: string,
+    pathAndQuery: string,
+    body?: unknown,
+    base = RUNPOD_API,
+  ): Promise<T> {
     for (let attempt = 1; ; attempt++) {
-      const res = await fetchFn(`${RUNPOD_API}${pathAndQuery}`, {
+      const res = await fetchFn(`${base}${pathAndQuery}`, {
         method,
         headers: {
           authorization: `Bearer ${apiKey}`,
@@ -79,7 +93,12 @@ export function createRunpodApi(apiKey: string, fetchFn: typeof fetch = fetch): 
         body: body === undefined ? undefined : JSON.stringify(body),
       });
       // Retry rate limits and server errors on reads only; writes are not idempotent.
-      if ((res.status === 429 || res.status >= 500) && method === "GET" && attempt < 4) {
+      if (
+        (res.status === 429 || res.status >= 500) &&
+        method === "GET" &&
+        retryReads &&
+        attempt < 4
+      ) {
         await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt));
         continue;
       }
@@ -128,5 +147,8 @@ export function createRunpodApi(apiKey: string, fetchFn: typeof fetch = fetch): 
     createEndpoint: (spec) => call("POST", "/serverless", spec),
     updateEndpoint: (id, patch) => call("PATCH", `/serverless/${encodeURIComponent(id)}`, patch),
     deleteEndpoint: (id) => call("DELETE", `/serverless/${encodeURIComponent(id)}`),
+    getEndpoint: (id) => call("GET", `/serverless/${encodeURIComponent(id)}`),
+    getEndpointHealth: (id) =>
+      call("GET", `/${encodeURIComponent(id)}/health`, undefined, RUNPOD_INFERENCE_API),
   };
 }

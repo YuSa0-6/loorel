@@ -148,6 +148,7 @@ node-compile-cache/
 .vite-hooks/_/
 plan.md
 apply.md
+artifacts/
 
 # Python bytecode (workers/decision)
 __pycache__/

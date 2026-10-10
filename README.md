@@ -272,6 +272,21 @@ GitHub Actions などの既存パイプラインには、承認済みの推論�
 
 実装の根拠: [Runpod provider の設定と SDK の使い方](https://github.com/runpod/ai-sdk-provider#provider-instance)。CLI はリソース同期を行う REST API v2 と分離されています。
 
+#### 一時エンドポイントの E2E pipeline
+
+`pnpm pipeline` は `endpoints/<名前>/` の OpenAI 互換・QUEUE 定義から、一時エンドポイントを 1 個作成します。health への到達を確認した後、SDK で `LOOREL_OK` を 1 回生成し、今回の作成応答で受け取った ID だけを削除して `GET /v2/serverless/{id}` の 404 まで確認します。`sync --apply` と `endpoints.json` は使いません。GPU は 1 枚、worker は min 0 / max 1 に制限します。GPU 型の自動解決が必要な `gpu.types` 定義、決定 API は対象外です。
+
+```sh
+# 実行前に今月の費用と残り予算を確認する。RUNPOD_API_KEY は環境変数で渡す。
+pnpm -s pipeline --live --model qwen3-8b \
+  --health-timeout-ms 120000 --inference-timeout-ms 120000 \
+  --out artifacts/e2e.json
+```
+
+`--live` なしでは接続しません。GPU の起動と推論には料金がかかります。月額予算の自動制限やリソースの有効期限は Runpod 側に設定されないため、実行前の費用照会と実行後の残存リソース照会が必要です。結果 JSON は作成前・ID 取得後・推論前・終了時に保存されます。`ok: true` は実応答と削除後の不在確認の両方が成功した場合だけです。`creationUnconfirmed: true` または `cleanup.status: failed` のときは `runName` / `endpointId` を手掛かりに Runpod で状態を確認してください。作成応答の ID が不明な場合、名前だけからリソースを推測して削除しません。
+
+health、推論、各管理 API 呼び出しには個別の期限があり、SIGINT / SIGTERM 時も作成済み ID の cleanup を試みます。SIGKILL や管理 API の曖昧な POST 応答では cleanup を保証できません。終了コードは成功 `0`、実行または cleanup 失敗 `1`、設定または成果物保存失敗 `2` です。結果には認証情報や推論の想定外の本文を含めません。実 Runpod での完走はまだ確認していません。
+
 ## リファレンス
 
 ### ディレクトリ構成
