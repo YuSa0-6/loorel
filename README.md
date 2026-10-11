@@ -688,13 +688,30 @@ https://gateway.ai.cloudflare.com/v1/{account}/runpod/custom-runpod/v2/{endpoint
 
 ## GitHub Actions
 
-| workflow                      | きっかけ                                                       | すること                                                               |
-| ----------------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| `.github/workflows/plan.yml`  | PR                                                             | `vp check`・テストのあと plan を PR コメントに出す（1 件を上書き更新） |
-| `.github/workflows/apply.yml` | main への push（`loorel.config.ts`・`endpoints/**`）、手動実行 | 承認後に apply を実行し、`endpoints.json` が変わったら bot PR を作る   |
+| workflow                           | きっかけ                                                       | すること                                                               |
+| ---------------------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `.github/workflows/plan.yml`       | PR                                                             | `vp check`・テストのあと plan を PR コメントに出す（1 件を上書き更新） |
+| `.github/workflows/apply.yml`      | main への push（`loorel.config.ts`・`endpoints/**`）、手動実行 | 承認後に apply を実行し、`endpoints.json` が変わったら bot PR を作る   |
+| `.github/workflows/runpod-e2e.yml` | main からの手動実行のみ                                        | 月額費用を確認し、一時 endpoint の実 E2E、cleanup、結果保存を行う      |
 
 手動実行（Actions → apply → Run workflow）では `prune` を選べます。apply は同時に 1 本だけ動き、後から来たものは順番待ちになります。
 `packages/define/**` だけの変更では apply を自動起動しません。同期ロジックの変更を Runpod に反映する必要がある場合は、差分と費用を確認してから手動実行してください。
+
+### 手動 Runpod E2E
+
+Actions → **runpod-e2e** → **Run workflow** から `main` を選びます。これは `apply` と別の workflow です。`apply` は定義を永続 endpoint に反映しますが、`runpod-e2e` は `qwen3-8b` の一時 endpoint を 1 つ作って実応答を検証し、削除後の 404 まで確認します。push や PR からは起動しません。
+
+| 設定                                      | 場所                                      | 用途                                                                                                                                                                     |
+| ----------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `RUNPOD_API_KEY`（必須）                  | GitHub Environment `production` の secret | Runpod REST API v2 の集計請求額の読み取り、Serverless endpoint の一覧・取得・作成・削除、推論 API の呼び出しに必要な権限を持つキー。値は workflow 入力やログに記載しない |
+| `RUNPOD_API_KEY_READONLY`（E2E には不要） | Repository secret                         | PR の read-only plan 用。ない場合は plan だけスキップされる                                                                                                              |
+| `production`（必須）                      | GitHub Environments                       | Required reviewers と deployment branches `main` を設定する。設定済みかは Actions 側で確認する                                                                           |
+
+入力の `confirm_budget` をオンにし、`usd_jpy_rate` に**現在の為替より低くない保守的な円/ドル値（200 以上）**を入力してください。事前に Runpod の今月の全リソース費用を確認してください。workflow は [Runpod の集計請求 API v2](https://docs.runpod.io/api-reference-v2/billing/get-aggregated-billing-history) を読み、JST の月初より前の UTC 日からの請求額を円換算します。請求額の切り上げ値と今回用の 500 円の予約枠が 1,000 円を超える場合、または請求 API・為替入力が不正な場合は endpoint を作りません。API 値を USD として扱います。請求反映の遅れ、為替変動、他の実行による同時費用があるため、これは Runpod アカウントの強制的な課金上限ではありません。自動チャージ設定には触れません。
+
+workflow は `production` の承認後、1 GPU・最大 worker 1、8 分での中断信号と別枠の cleanup、15 分の job 上限、`apply` と共有する同時実行制限で動きます。失敗やキャンセル後は、成果物に記録された ID の名前が今回の一時名に一致するときだけ cleanup を再試行します。作成応答が不明な場合は名前だけから削除対象を推測しません。強制終了では cleanup や成果物保存を保証できないため、実行後に Runpod 側の残存リソースも確認してください。
+
+`artifacts/budget.json`、`artifacts/e2e.json`、`artifacts/cleanup.json` の安全な項目だけを **runpod-e2e-results-<run ID>** に 7 日間保存します。成功判断は `e2e.json` の `ok: true` と `cleanup.status: succeeded`、または回復処理後の `cleanup.json` の状態、および Runpod 側の削除後確認で行います。HTTP 本文やキーは成果物に保存しません。
 
 ### 最初に 1 回だけ行うリポジトリ設定
 
