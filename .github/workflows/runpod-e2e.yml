@@ -1,0 +1,72 @@
+# Manual, paid verification of one temporary endpoint. Never runs on a push or PR.
+name: runpod-e2e
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_budget:
+        description: "I checked this month's 1000 JPY limit and authorize one paid E2E run"
+        type: boolean
+        required: true
+        default: false
+      usd_jpy_rate:
+        description: "Conservative JPY per USD for the budget gate (200 or higher)"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+# Share the group with apply: neither workflow can mutate Runpod concurrently here.
+concurrency:
+  group: runpod-apply
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Confirm the manual budget approval
+        env:
+          CONFIRM_BUDGET: ${{ inputs.confirm_budget }}
+        run: test "$CONFIRM_BUDGET" = true
+      - name: Check monthly Runpod billing
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          USD_JPY_RATE: ${{ inputs.usd_jpy_rate }}
+        run: node infra/runpod/budget.ts
+      - name: Run one live endpoint lifecycle
+        id: live
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: >-
+          timeout --signal=INT --kill-after=90s 8m
+          node infra/runpod/pipeline.ts --live --model qwen3-8b
+          --health-timeout-ms 150000 --inference-timeout-ms 150000
+          --request-timeout-ms 30000 --out artifacts/e2e.json
+      - name: Retry cleanup after failure or cancellation
+        if: ${{ always() && steps.live.outcome != 'skipped' }}
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: node infra/runpod/cleanup.ts
+      - name: Save sanitized results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: runpod-e2e-results-${{ github.run_id }}
+          path: |
+            artifacts/budget.json
+            artifacts/e2e.json
+            artifacts/cleanup.json
+          if-no-files-found: warn
+          retention-days: 7
