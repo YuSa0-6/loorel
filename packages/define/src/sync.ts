@@ -10,7 +10,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { ConfigError, loadSpecs } from "./config.ts";
+import { ConfigError, loadEndpoints } from "./config.ts";
 import {
   type EndpointIds,
   makePlan,
@@ -80,7 +80,8 @@ export async function sync({
   };
 
   try {
-    const specs = await loadSpecs(root);
+    const endpoints = await loadEndpoints(root);
+    const specs = endpoints.map((e) => e.spec);
     const api = createRunpodApi(apiKey, fetchFn);
     // Data centers and volumes are listed only when an endpoint uses them.
     const placement = usesPlacement(specs);
@@ -93,6 +94,7 @@ export async function sync({
       specs.some((s) => s.networkVolumes.length > 0) ? listVolumes(api) : undefined,
     ]);
     const plan = makePlan(specs, remote, known, { gpuTypes, secrets, dataCenters, volumes });
+    plan.warnings.push(...endpoints.flatMap((e) => e.deprecations));
     emit(renderPlan(plan, { prune: values.prune }));
     if (values.plan) {
       await save();

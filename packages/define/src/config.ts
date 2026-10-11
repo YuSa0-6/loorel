@@ -135,19 +135,26 @@ const Model = v.pipe(
   v.strictObject({
     name: Name,
     source: v.pipe(v.string(), v.nonEmpty("source is required")),
-    api: v.optional(v.picklist(["openai", "decision"]), "openai"),
-    vllm: v.optional(Env, {}),
+    // api and vllm are the old way to pick the engine. Unset means the endpoint's engine decides.
+    api: v.optional(v.picklist(["openai", "decision"])),
+    vllm: v.optional(Env),
     secrets: v.optional(Secrets, {}),
   }),
   v.check(
-    (m) => Object.keys(m.secrets).every((k) => !(k in m.vllm)),
+    (m) => Object.keys(m.secrets).every((k) => !(k in (m.vllm ?? {}))),
     "an env var is set in both vllm and secrets",
   ),
 );
 
+const EngineSchema = v.variant("type", [
+  v.strictObject({ type: v.literal("vllm"), image: v.optional(Image), env: v.optional(Env, {}) }),
+  v.strictObject({ type: v.literal("decision"), image: Image, env: v.optional(Env, {}) }),
+]);
+
 const Endpoint = v.pipe(
   v.strictObject({
     model: Model,
+    engine: v.optional(EngineSchema),
     gpu: v.pipe(
       v.strictObject({
         pools: v.optional(v.pipe(v.array(v.string()), v.minLength(1))),
@@ -180,16 +187,38 @@ const Endpoint = v.pipe(
     scaling: v.optional(ScalingSchema),
   }),
   v.check((e) => e.workers.min <= e.workers.max, "workers.min must be <= workers.max"),
+  v.check(
+    (e) => e.engine === undefined || legacyFields(e).length === 0,
+    (i) =>
+      `engine replaces ${legacyFields(i.input as EndpointInput).join(", ")}; move them into engine`,
+  ),
   // The vLLM image in defaults serves only the OpenAI-compatible API.
   v.check(
     (e) => e.model.api !== "decision" || e.image !== undefined,
-    "a decision model needs a worker image that serves the decision API; set image",
+    'a decision model needs a worker image that serves the decision API; set engine: { type: "decision", image }',
   ),
   v.check(
     (e) => Object.keys(e.model.secrets).every((k) => !(k in e.env)),
     "an env var is set in both env and the model's secrets",
   ),
+  v.check(
+    (e) => Object.keys(e.model.secrets).every((k) => !(k in (e.engine?.env ?? {}))),
+    "an env var is set in both engine.env and the model's secrets",
+  ),
 );
+
+interface EndpointInput {
+  model: { api?: unknown; vllm?: unknown };
+  image?: unknown;
+}
+
+/** The old fields that `engine` replaces, as written in the endpoint. */
+const legacyFields = (e: EndpointInput) =>
+  [
+    e.model.api !== undefined && "model.api",
+    e.model.vllm !== undefined && "model.vllm",
+    e.image !== undefined && "image",
+  ].filter((f) => f !== false);
 
 const Config = v.strictObject({ defaults: Defaults });
 
@@ -259,21 +288,50 @@ async function endpointDirs(root: string): Promise<string[]> {
   return names;
 }
 
+/** How callers talk to the worker: OpenAI-compatible chat or the decision API. */
+type Api = "openai" | "decision";
+
 /** One endpoint directory: the Runpod spec plus what callers need to know. */
 export interface LoadedEndpoint {
   name: string;
-  /** How callers talk to the worker: OpenAI-compatible chat or the decision API. */
-  api: "openai" | "decision";
+  api: Api;
   /** The model name callers send. */
   model: string;
   spec: EndpointSpec;
+  /** Old fields this endpoint still uses. The plan shows them as warnings. */
+  deprecations: string[];
 }
 
 type DefaultsOutput = v.InferOutput<typeof Defaults>;
 type EndpointOutput = v.InferOutput<typeof Endpoint>;
+type EngineOutput = v.InferOutput<typeof EngineSchema>;
+
+/** The endpoint's engine, built from the old fields when `engine` is not set. */
+function engineOf(e: EndpointOutput): EngineOutput {
+  if (e.engine) return e.engine;
+  const env = e.model.vllm ?? {};
+  // The schema has already checked that a decision model sets image.
+  if (e.model.api === "decision") return { type: "decision", image: e.image as string, env };
+  return { type: "vllm", image: e.image, env };
+}
+
+/** What an engine runs on Runpod: the worker image, its env vars and the API callers use. */
+function workerOf(engine: EngineOutput, defaults: DefaultsOutput) {
+  switch (engine.type) {
+    case "vllm":
+      return { api: "openai" as const, image: engine.image ?? defaults.image, env: engine.env };
+    case "decision":
+      return { api: "decision" as const, image: engine.image, env: engine.env };
+  }
+}
 
 /** One endpoint directory as the Runpod spec, with defaults filled in. */
-function toSpec(name: string, e: EndpointOutput, defaults: DefaultsOutput): EndpointSpec {
+function toSpec(
+  name: string,
+  e: EndpointOutput,
+  worker: ReturnType<typeof workerOf>,
+  defaults: DefaultsOutput,
+): EndpointSpec {
   const { model } = e;
   const refs = Object.fromEntries(
     Object.entries(model.secrets).map(([k, secret]) => [k, secretRef(secret)]),
@@ -288,12 +346,12 @@ function toSpec(name: string, e: EndpointOutput, defaults: DefaultsOutput): Endp
   return {
     name,
     type: defaults.type,
-    image: e.image ?? defaults.image,
+    image: worker.image,
     disk: e.disk ?? defaults.disk,
     env: {
       ...defaults.env,
       [SOURCE_KEY]: model.source,
-      ...model.vllm,
+      ...worker.env,
       ...e.env,
       ...refs,
       [SERVED_NAME_KEY]: model.name,
@@ -325,20 +383,24 @@ export async function loadEndpoints(root: string): Promise<LoadedEndpoint[]> {
   for (const name of await endpointDirs(root)) {
     const file = `${ENDPOINTS_DIR}/${name}/${ENDPOINT_FILE}`;
     const e = await importConfig(root, file, Endpoint);
+    const worker = workerOf(engineOf(e), defaults);
     // Callers send decision requests to /runsync, which only queue endpoints have.
-    if (e.model.api === "decision" && defaults.type !== "QUEUE") {
+    if (worker.api === "decision" && defaults.type !== "QUEUE") {
       throw new ConfigError(`${file}: a decision model needs type QUEUE in ${CONFIG_FILE}`);
     }
+    const old = legacyFields(e);
     endpoints.push({
       name,
-      api: e.model.api,
+      api: worker.api,
       model: e.model.name,
-      spec: toSpec(name, e, defaults),
+      spec: toSpec(name, e, worker, defaults),
+      deprecations:
+        old.length === 0
+          ? []
+          : [
+              `${name}: ${old.join(", ")} ${old.length === 1 ? "is" : "are"} deprecated; set engine in ${file} instead`,
+            ],
     });
   }
   return endpoints;
 }
-
-/** The Runpod specs of every endpoint, sorted by name. */
-export const loadSpecs = async (root: string): Promise<EndpointSpec[]> =>
-  (await loadEndpoints(root)).map((e) => e.spec);

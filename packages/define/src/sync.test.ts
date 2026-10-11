@@ -141,9 +141,9 @@ describe("sync --plan", () => {
     [
       "a secret value in the config",
       qwen((e) => {
-        e.model.vllm = { HF_TOKEN: "hf_x" };
+        e.engine = { type: "vllm", env: { HF_TOKEN: "hf_x" } };
       }),
-      "endpoints/qwen3-8b/endpoint.config.ts:\n  model.vllm.HF_TOKEN: secret values must not be written in the config",
+      "endpoints/qwen3-8b/endpoint.config.ts:\n  engine.env.HF_TOKEN: secret values must not be written in the config",
     ],
     [
       "a missing source",
@@ -155,7 +155,7 @@ describe("sync --plan", () => {
     [
       "MODEL_NAME written by hand",
       qwen((e) => {
-        e.model.vllm = { MODEL_NAME: "Qwen/Qwen3-8B" };
+        e.engine = { type: "vllm", env: { MODEL_NAME: "Qwen/Qwen3-8B" } };
       }),
       "MODEL_NAME is set from the model source",
     ],
@@ -225,7 +225,7 @@ export default defineEndpoint({ ...${JSON.stringify(QWEN)}, model });
       "loorel.config.ts": CONFIG,
       "endpoints/qwen3-8b/endpoint.config.ts": `export default {
   ...${JSON.stringify(QWEN)},
-  model: { ...${JSON.stringify(QWEN.model)}, vllm: { MAX_MODEL_LEN: 8192, DTYPE: undefined } },
+  engine: { type: "vllm", env: { MAX_MODEL_LEN: 8192, DTYPE: undefined } },
 };
 `,
     });
@@ -467,7 +467,7 @@ describe("secrets", () => {
     expect(output).toContain(message);
   });
 
-  test("an env var set in both vllm and secrets is rejected", async () => {
+  test("an env var set in both engine.env and secrets is rejected", async () => {
     const endpoint = qwen((e) => {
       e.model.secrets = { MAX_MODEL_LEN: "hf-token" };
     });
@@ -477,7 +477,7 @@ describe("secrets", () => {
       "--plan",
     );
     expect(code).toBe(1);
-    expect(output).toContain("an env var is set in both vllm and secrets");
+    expect(output).toContain("an env var is set in both engine.env and the model's secrets");
   });
 });
 
@@ -485,8 +485,8 @@ describe("decision models", () => {
   const CLEF_IMAGE = "example/clef-worker:v1.0.0";
   const clef = (edit: (e: EndpointDef) => void = () => {}) =>
     qwen((e) => {
-      e.model = { name: "clef", source: "Cloudflare/clef", api: "decision" };
-      e.image = CLEF_IMAGE;
+      e.model = { name: "clef", source: "Cloudflare/clef" };
+      e.engine = { type: "decision", image: CLEF_IMAGE };
       edit(e);
     });
 
@@ -497,13 +497,25 @@ describe("decision models", () => {
     expect(output).toContain('+     env.MODEL_NAME: "Cloudflare/clef"');
   });
 
-  test("a decision model without an image is rejected", async () => {
+  test("a decision engine without an image is rejected", async () => {
     const endpoint = clef((e) => {
-      delete e.image;
+      e.engine = { type: "decision" } as never;
     });
     const { code, output } = await run(await makeRepo({ clef: endpoint }), fakeRunpod(), "--plan");
     expect(code).toBe(1);
-    expect(output).toContain("a decision model needs a worker image");
+    expect(output).toContain("engine.image");
+  });
+
+  test("defaults.env and the endpoint env still reach a decision worker", async () => {
+    const endpoint = clef((e) => {
+      e.engine = { type: "decision", image: CLEF_IMAGE, env: { OLLAMA_KEEP_ALIVE: "-1" } };
+      e.env = { OLLAMA_NUM_PARALLEL: 4 };
+    });
+    const { code, output } = await run(await makeRepo({ clef: endpoint }), fakeRunpod(), "--plan");
+    expect(code).toBe(0);
+    expect(output).toContain('+     env.GPU_MEMORY_UTILIZATION: "0.90"');
+    expect(output).toContain('+     env.OLLAMA_KEEP_ALIVE: "-1"');
+    expect(output).toContain('+     env.OLLAMA_NUM_PARALLEL: "4"');
   });
 
   test("a decision model needs a queue endpoint", async () => {
@@ -687,7 +699,7 @@ describe("GPU types, data centers, network volumes and CUDA", () => {
     expect(writes(runpod)[0]?.body).toEqual({ gpu: { minCudaVersion: "" } });
   });
 
-  test("endpoint env overrides the model's vllm env", async () => {
+  test("endpoint env overrides the engine env", async () => {
     const endpoint = qwen((e) => {
       e.env = { MAX_MODEL_LEN: 4096, TENSOR_PARALLEL_SIZE: 2 };
     });
@@ -713,5 +725,94 @@ describe("GPU types, data centers, network volumes and CUDA", () => {
     );
     expect(code).toBe(1);
     expect(output).toContain("HF_TOKEN");
+  });
+});
+
+describe("the old fields that engine replaces", () => {
+  /** QWEN written before engine existed: vLLM env vars on the model. */
+  const oldQwen = (edit: (e: EndpointDef) => void = () => {}) =>
+    qwen((e) => {
+      delete e.engine;
+      e.model.vllm = { MAX_MODEL_LEN: 8192 };
+      edit(e);
+    });
+
+  test("model.vllm gives the same endpoint as engine.env, with a warning", async () => {
+    const runpod = fakeRunpod([syncedQwen()]);
+    const { code, output } = await run(await makeRepo({ "qwen3-8b": oldQwen() }), runpod, "--plan");
+    expect(code).toBe(0);
+    expect(output).toContain("0 to create, 0 to update, 1 unchanged");
+    expect(output).toContain(
+      "qwen3-8b: model.vllm is deprecated; set engine in endpoints/qwen3-8b/endpoint.config.ts instead",
+    );
+  });
+
+  test("an endpoint written with engine has no warning", async () => {
+    const runpod = fakeRunpod([syncedQwen()]);
+    const { output } = await run(await makeRepo({ "qwen3-8b": QWEN }), runpod, "--plan");
+    expect(output).not.toContain("deprecated");
+  });
+
+  test("an endpoint image still replaces defaults.image", async () => {
+    const endpoint = oldQwen((e) => {
+      e.image = "runpod/worker-v1-vllm:v9.9.9";
+    });
+    const { code, output } = await run(
+      await makeRepo({ "qwen3-8b": endpoint }),
+      fakeRunpod(),
+      "--plan",
+    );
+    expect(code).toBe(0);
+    expect(output).toContain('+     image: "runpod/worker-v1-vllm:v9.9.9"');
+    expect(output).toContain("model.vllm, image are deprecated");
+  });
+
+  test("model.api decision with an endpoint image runs the decision worker", async () => {
+    const endpoint = qwen((e) => {
+      delete e.engine;
+      e.model = { name: "clef", source: "Cloudflare/clef", api: "decision" };
+      e.image = "example/clef-worker:v1.0.0";
+    });
+    const { code, output } = await run(await makeRepo({ clef: endpoint }), fakeRunpod(), "--plan");
+    expect(code).toBe(0);
+    expect(output).toContain('+     image: "example/clef-worker:v1.0.0"');
+    expect(output).toContain("clef: model.api, image are deprecated");
+  });
+
+  test("model.api decision without an image is rejected", async () => {
+    const endpoint = qwen((e) => {
+      delete e.engine;
+      e.model = { name: "clef", source: "Cloudflare/clef", api: "decision" };
+    });
+    const { code, output } = await run(await makeRepo({ clef: endpoint }), fakeRunpod(), "--plan");
+    expect(code).toBe(1);
+    expect(output).toContain("a decision model needs a worker image");
+  });
+
+  test("an env var set in both model.vllm and secrets is rejected", async () => {
+    const endpoint = oldQwen((e) => {
+      e.model.secrets = { MAX_MODEL_LEN: "hf-token" };
+    });
+    const { code, output } = await run(
+      await makeRepo({ "qwen3-8b": endpoint }),
+      fakeRunpod(),
+      "--plan",
+    );
+    expect(code).toBe(1);
+    expect(output).toContain("an env var is set in both vllm and secrets");
+  });
+
+  test.each([
+    ["model.vllm", (e: EndpointDef) => (e.model.vllm = { DTYPE: "auto" })],
+    ["model.api", (e: EndpointDef) => (e.model.api = "openai")],
+    ["image", (e: EndpointDef) => (e.image = "runpod/worker-v1-vllm:v9.9.9")],
+  ])("%s together with engine is rejected", async (field, edit) => {
+    const { code, output } = await run(
+      await makeRepo({ "qwen3-8b": qwen(edit) }),
+      fakeRunpod(),
+      "--plan",
+    );
+    expect(code).toBe(1);
+    expect(output).toContain(`engine replaces ${field}; move them into engine`);
   });
 });

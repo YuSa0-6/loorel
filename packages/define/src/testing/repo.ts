@@ -27,7 +27,8 @@ export function qwen(
   edit: (e: EndpointDef & Record<string, unknown>) => void = () => {},
 ): EndpointDef {
   const e: EndpointDef = {
-    model: { name: "qwen3-8b", source: "Qwen/Qwen3-8B", vllm: { MAX_MODEL_LEN: 8192 } },
+    model: { name: "qwen3-8b", source: "Qwen/Qwen3-8B" },
+    engine: { type: "vllm", env: { MAX_MODEL_LEN: 8192 } },
     gpu: { pools: ["ADA_24"], count: 1 },
     workers: { min: 0, max: 2 },
   };
