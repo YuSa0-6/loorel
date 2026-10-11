@@ -11,8 +11,8 @@ async function run(root: string, ...argv: string[]) {
 }
 
 const CLEF = qwen((e) => {
-  e.model = { name: "clef", source: "Cloudflare/clef", api: "decision" };
-  e.image = "example/clef-worker:v1.0.0";
+  e.model = { name: "clef", source: "Cloudflare/clef" };
+  e.engine = { type: "decision", image: "example/clef-worker:v1.0.0" };
 });
 
 describe("types", () => {
@@ -31,6 +31,18 @@ describe("types", () => {
     expect(text).toContain("export type Endpoints = typeof endpoints;");
   });
 
+  test("the api of an endpoint written the old way comes from model.api", async () => {
+    const old = qwen((e) => {
+      e.model = { name: "clef", source: "Cloudflare/clef", api: "decision" };
+      delete e.engine;
+      e.image = "example/clef-worker:v1.0.0";
+    });
+    const root = await makeRepo({ "risk-check": old });
+    await run(root);
+    const text = await readFile(path.join(root, "loorel.gen.ts"), "utf8");
+    expect(text).toContain('  "risk-check": {\n    api: "decision",\n    model: "clef",\n  },');
+  });
+
   test("--check fails when the file is missing or stale, and writes nothing", async () => {
     const root = await makeRepo({ "qwen3-8b": QWEN });
     expect(await run(root, "--check")).toEqual({
@@ -44,9 +56,9 @@ describe("types", () => {
   test("no endpoints give an empty object, and names that are identifiers stay unquoted", () => {
     expect(renderTypes([])).toContain("export const endpoints = {} as const;");
     const spec = {} as never;
-    expect(renderTypes([{ name: "clef", api: "decision", model: "clef", spec }])).toContain(
-      "  clef: {",
-    );
+    expect(
+      renderTypes([{ name: "clef", api: "decision", model: "clef", spec, deprecations: [] }]),
+    ).toContain("  clef: {");
   });
 
   test("an unknown argument is a usage error", async () => {

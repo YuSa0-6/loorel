@@ -26,12 +26,12 @@
 export default defineModel({
   name: "qwen3-8b",
   source: "Qwen/Qwen3-8B",
-  vllm: { MAX_MODEL_LEN: 8192 },
 });
 
 // endpoint.config.ts
 export default defineEndpoint({
   model, // ./model.config.ts
+  engine: { type: "vllm", env: { MAX_MODEL_LEN: 8192 } },
   gpu: { pools: ["ADA_24"], count: 1 },
   workers: { min: 0, max: 2 },
 });
@@ -134,7 +134,7 @@ endpoint URL: https://gateway.ai.cloudflare.com/v1/{account}/runpod/custom-runpo
 
 ### 3. エンドポイントを 1 つ書く
 
-`endpoints/` の下にディレクトリを作ります。ディレクトリ名がエンドポイント名です。中に、配信するモデル（`model.config.ts`）と、動かし方（`endpoint.config.ts`）を書きます。GPU はプール ID（例 `ADA_24`）をエディタの候補から選べます。
+`endpoints/` の下にディレクトリを作ります。ディレクトリ名がエンドポイント名です。中に、配信するモデル（`model.config.ts`）と、動かし方（`endpoint.config.ts`）を書きます。推論エンジン（`engine`）と GPU のプール ID（例 `ADA_24`）は、エディタの候補から選べます。
 
 ```ts
 // endpoints/qwen3-8b/model.config.ts
@@ -143,7 +143,6 @@ import { defineModel } from "@loorel/define";
 export default defineModel({
   name: "qwen3-8b", // アプリが `model` に指定する名前
   source: "Qwen/Qwen3-8B", // Hugging Face のリポジトリ
-  vllm: { MAX_MODEL_LEN: 8192 },
 });
 ```
 
@@ -154,6 +153,7 @@ import model from "./model.config.ts";
 
 export default defineEndpoint({
   model,
+  engine: { type: "vllm", env: { MAX_MODEL_LEN: 8192 } }, // vLLM で動かす
   gpu: { pools: ["ADA_24"], count: 1 },
   workers: { min: 0, max: 2 },
 });
@@ -296,7 +296,7 @@ loorel.config.ts                 全エンドポイント共通の設定（defau
 endpoints/
   qwen3-8b/                      ← ディレクトリ名 = エンドポイント名
     model.config.ts              何を配信するか（defineModel）
-    endpoint.config.ts           どこでどう動かすか（defineEndpoint）
+    endpoint.config.ts           どの engine で、どこで動かすか（defineEndpoint）
   qwen3-8b-a100/
     endpoint.config.ts           ../qwen3-8b/model.config.ts を import して使い回す
   _shared/                       _ で始まるディレクトリは共有コード置き場（エンドポイントにならない）
@@ -337,6 +337,7 @@ flowchart LR
 | 項目                 | 必須                   | 既定値   | 意味                                                                                                   |
 | -------------------- | ---------------------- | -------- | ------------------------------------------------------------------------------------------------------ |
 | `model`              | 必須                   | —        | `defineModel` の値。ふつうは `./model.config.ts` を import する                                        |
+| `engine`             | 任意                   | vllm     | 推論エンジン。worker のイメージ・環境変数・呼び出し方が決まる。[engine](#engine) を参照                |
 | `gpu.pools`          | `gpu.types` とどちらか | —        | GPU プール ID の一覧（例 `ADA_24`）。空きがあるプールで起動する                                        |
 | `gpu.types`          | `gpu.pools` とどちらか | —        | GPU の型の一覧（例 `NVIDIA GeForce RTX 4090`）。plan がプールと `excludedTypes` に直す                 |
 | `gpu.excludedTypes`  | 任意                   | `[]`     | プールから外す GPU の型（例 `NVIDIA L4`）。`gpu.pools` のときだけ                                      |
@@ -344,8 +345,7 @@ flowchart LR
 | `gpu.minCudaVersion` | 任意                   | defaults | worker を置くホストの CUDA ドライバーの下限（例 `"12.8"`）                                             |
 | `workers.min`        | 必須                   | —        | 常に起動しておく数。`0` なら待機中は課金なし                                                           |
 | `workers.max`        | 必須                   | —        | 同時に起動する上限                                                                                     |
-| `image`              | 任意                   | defaults | worker のイメージ（タグ固定）。決定モデルでは必須                                                      |
-| `env`                | 任意                   | `{}`     | このエンドポイントだけの環境変数。モデルの `vllm` より優先される                                       |
+| `env`                | 任意                   | `{}`     | このエンドポイントだけの環境変数。`engine.env` より優先される                                          |
 | `dataCenters`        | 任意                   | defaults | worker を起動するデータセンター（例 `EU-RO-1`）。空なら Runpod が選び、plan はデータセンターを比べない |
 | `networkVolumes`     | 任意                   | `[]`     | `/runpod-volume` にマウントするネットワークボリュームの ID。データセンター 1 つにつき 1 つまで         |
 | `disk`               | 任意                   | defaults | コンテナのディスク（GB）。モデルはここに落とす                                                         |
@@ -361,6 +361,35 @@ flowchart LR
 ```ts
 gpu: { types: ["NVIDIA GeForce RTX 4090"] },
 // plan の表示: gpu: {"pools":["ADA_24"],"excludedTypes":["NVIDIA L4"],"count":1}
+```
+
+#### engine
+
+`engine` は、モデルを「どう推論するか」を決めます。`type` を選ぶと、その engine で書ける項目だけがエディタの候補に出ます。
+
+| `type`       | worker のイメージ                 | `env` に書くもの                               | 呼び出し方（`api`）              | `source` の意味                            |
+| ------------ | --------------------------------- | ---------------------------------------------- | -------------------------------- | ------------------------------------------ |
+| `"vllm"`     | `engine.image`、なければ defaults | vLLM worker の環境変数（`MAX_MODEL_LEN` など） | `"openai"`：`client.model()`     | Hugging Face のリポジトリ                  |
+| `"decision"` | `engine.image`（必須）            | その worker の環境変数                         | `"decision"`：`client.decider()` | worker が読むモデル名（例：Ollama の名前） |
+
+`engine` を書かないときは `{ type: "vllm" }` になります。`api` は engine から決まり、`pnpm types` が `loorel.gen.ts` に書き出します。
+
+```mermaid
+flowchart LR
+  M["model<br>name・source"] --> L["@loorel/define<br>engine ごとに組み立てる"]
+  E["engine<br>type・image・env"] --> L
+  P["endpoint<br>gpu・workers"] --> L
+  L -->|"image・env"| R["Runpod の<br>エンドポイント"]
+  L -->|"api"| G["loorel.gen.ts<br>→ model() / decider()"]
+```
+
+同じ engine の設定を複数のエンドポイントで使うときは、`defineEngine` で書いて import します。
+
+```ts
+// endpoints/_shared/qwen-vllm.ts
+import { defineEngine } from "@loorel/define";
+
+export default defineEngine({ type: "vllm", env: { MAX_MODEL_LEN: 8192 } });
 ```
 
 #### モデルの重みをネットワークボリュームに置く
@@ -390,27 +419,39 @@ vLLM worker は、Hugging Face のキャッシュとモデルを `/runpod-volume
 
 `defineModel` で書きます。
 
-| 項目        | 必須 | 既定値     | 意味                                                                                       |
-| ----------- | ---- | ---------- | ------------------------------------------------------------------------------------------ |
-| `name`      | 必須 | —          | アプリが `model` に指定する名前。小文字・数字・`-`                                         |
-| `source`    | 必須 | —          | Hugging Face のリポジトリ（例 `Qwen/Qwen3-8B`）。`MODEL_NAME` として渡る                   |
-| `api`       | 任意 | `"openai"` | 呼び出し方。`"openai"`（チャット）か `"decision"`（[決定モデル](#呼び出す側loorelclient)） |
-| `vllm.*`    | 任意 | `{}`       | vLLM worker の環境変数。数値・真偽値も書ける（文字列にして送る）                           |
-| `secrets.*` | 任意 | `{}`       | 環境変数名 → Runpod Secret の名前。[秘密の渡し方](#秘密の渡し方)                           |
+| 項目        | 必須 | 既定値 | 意味                                                                           |
+| ----------- | ---- | ------ | ------------------------------------------------------------------------------ |
+| `name`      | 必須 | —      | アプリが `model` に指定する名前。小文字・数字・`-`                             |
+| `source`    | 必須 | —      | モデルの取得元。`MODEL_NAME` として渡る。意味は [engine](#engine) ごとに決まる |
+| `secrets.*` | 任意 | `{}`   | 環境変数名 → Runpod Secret の名前。[秘密の渡し方](#秘密の渡し方)               |
 
-1 つのモデルを複数のエンドポイントで使えます。別の GPU でも動かしたいときは、ディレクトリを足して同じ `model.config.ts` を import します。
+1 つのモデルを複数のエンドポイントで使えます。別の GPU でも動かしたいときは、ディレクトリを足して同じ `model.config.ts` と engine を import します。
 
 ```ts
 // endpoints/qwen3-8b-a100/endpoint.config.ts
 import { defineEndpoint } from "@loorel/define";
 import model from "../qwen3-8b/model.config.ts";
+import engine from "../_shared/qwen-vllm.ts";
 
 export default defineEndpoint({
   model,
+  engine,
   gpu: { pools: ["AMPERE_80"] },
   workers: { min: 0, max: 1 },
 });
 ```
+
+#### 以前の書き方（engine より前）
+
+次の 3 つの項目は、今も動きます。plan はそのエンドポイントに警告を出します。`engine` と一緒には書けません。
+
+| 以前の書き方                                                      | 今の書き方                                                 |
+| ----------------------------------------------------------------- | ---------------------------------------------------------- |
+| `defineModel({ vllm: { … } })`                                    | `defineEndpoint({ engine: { type: "vllm", env: { … } } })` |
+| `defineEndpoint({ image })`（vLLM）                               | `engine: { type: "vllm", image }`                          |
+| `defineModel({ api: "decision" })` と `defineEndpoint({ image })` | `engine: { type: "decision", image }`                      |
+
+書き換えても、Runpod に送る内容は変わりません。plan は `unchanged` のままです。
 
 #### 環境変数の組み立て
 
@@ -420,7 +461,8 @@ export default defineEndpoint({
 flowchart LR
   D["defaults.env<br>GPU_MEMORY_UTILIZATION<br>MAX_CONCURRENCY"] --> M(("+"))
   SRC["source<br>→ MODEL_NAME"] --> M
-  V["vllm<br>MAX_MODEL_LEN …"] --> M
+  V["engine.env<br>MAX_MODEL_LEN …"] --> M
+  EP["endpoint の env"] --> M
   S["secrets<br>HF_TOKEN → {{ RUNPOD_SECRET_… }}"] --> M
   N["name<br>→ OPENAI_SERVED_MODEL_NAME_OVERRIDE"] --> M
   M --> E["endpoint.env<br>PATCH では丸ごと置き換わる"]
@@ -462,12 +504,12 @@ Secret の値を変えたときは、次に起動した worker から新しい�
 
 ### 呼び出す側（@loorel/client）
 
-`createLoorelClient` が、エンドポイントの `api` に合わせて呼び方を分けます。
+`createLoorelClient` が、エンドポイントの `api` に合わせて呼び方を分けます。`api` は `engine.type` から決まります。
 
-| メソッド        | 対象のエンドポイント | 返すもの                                                |
-| --------------- | -------------------- | ------------------------------------------------------- |
-| `model(name)`   | `api: "openai"`      | AI SDK のモデル（`generateText` などに渡す）            |
-| `decider(name)` | `api: "decision"`    | 型付きの `decide()`。決定モデルに質問して確率を受け取る |
+| メソッド        | 対象のエンドポイント                           | 返すもの                                                |
+| --------------- | ---------------------------------------------- | ------------------------------------------------------- |
+| `model(name)`   | `engine.type: "vllm"`（`api: "openai"`）       | AI SDK のモデル（`generateText` などに渡す）            |
+| `decider(name)` | `engine.type: "decision"`（`api: "decision"`） | 型付きの `decide()`。決定モデルに質問して確率を受け取る |
 
 違う種類のエンドポイント名を渡すと型エラーになります。
 
@@ -486,7 +528,7 @@ Secret の値を変えたときは、次に起動した worker から新しい�
 import { defineModel } from "@loorel/define";
 
 // source は worker が読むモデル名（下の workers/decision では Ollama の名前 "clef"）
-export default defineModel({ name: "clef", source: "Cloudflare/clef", api: "decision" });
+export default defineModel({ name: "clef", source: "Cloudflare/clef" });
 ```
 
 ```ts
@@ -496,7 +538,8 @@ import model from "./model.config.ts";
 
 export default defineEndpoint({
   model,
-  image: "your-registry/clef-worker:v1.0.0", // 決定 API を話す worker（下の約束を参照）
+  // 決定 API を話す worker（下の約束を参照）
+  engine: { type: "decision", image: "your-registry/clef-worker:v1.0.0" },
   gpu: { pools: ["HOPPER_141"] },
   workers: { min: 0, max: 1 },
 });
@@ -522,7 +565,7 @@ answers.team.choice; // "billing" | "technical"（質問の選択肢から型が
 
 #### 決定モデルの worker との約束
 
-vLLM は決定モデルを配信できないので、`image` に決定 API を話す worker を指定します。Loorel はキュー型のエンドポイントに、次の形で送ります。
+vLLM は決定モデルを配信できないので、`engine.image` に決定 API を話す worker を指定します。Loorel はキュー型のエンドポイントに、次の形で送ります。
 
 | 項目               | 内容                                                                                |
 | ------------------ | ----------------------------------------------------------------------------------- |
@@ -556,7 +599,7 @@ flowchart LR
 import { defineModel } from "@loorel/define";
 
 // この worker では source に Ollama のモデル名を書く（clef か clef-flash）
-export default defineModel({ name: "risk-check", source: "clef-flash", api: "decision" });
+export default defineModel({ name: "risk-check", source: "clef-flash" });
 ```
 
 ```ts
@@ -566,7 +609,7 @@ import model from "./model.config.ts";
 
 export default defineEndpoint({
   model,
-  image: "ghcr.io/yusa0-6/loorel-decision-worker:0.1.0",
+  engine: { type: "decision", image: "ghcr.io/yusa0-6/loorel-decision-worker:0.1.0" },
   gpu: { pools: ["ADA_24"] }, // clef-flash（9B）は 24 GB に収まる。clef（27B）はもっと大きい GPU を選ぶ
   workers: { min: 0, max: 1 },
 });
@@ -587,18 +630,18 @@ export default defineEndpoint({
 
 全エンドポイント共通の設定を `defineConfig({ defaults })` で書きます。Runpod のテンプレートのかわりにリポジトリで持ちます。
 
-| 項目             | 今の値                          | 意味                                                              |
-| ---------------- | ------------------------------- | ----------------------------------------------------------------- |
-| `image`          | `runpod/worker-v1-vllm:v2.27.2` | vLLM worker のイメージ。タグは必ず固定する                        |
-| `type`           | `QUEUE`                         | キュー型。`/run`・`/status`・`/openai/v1` が使える                |
-| `disk`           | `50`                            | コンテナのディスク（GB）                                          |
-| `flashboot`      | `FLASHBOOT`                     | 起動を速くする Runpod の機能                                      |
-| `timeout`        | `600000`                        | 1 リクエストの上限（ミリ秒）                                      |
-| `idleTimeout`    | `5`                             | 何秒使われなければワーカーを止めるか                              |
-| `scaling`        | `QUEUE_DELAY 4`                 | キューの待ち時間でワーカーを増やす                                |
-| `env`            | 2 件                            | 全モデル共通の vLLM 環境変数                                      |
-| `dataCenters`    | なし（Runpod が選ぶ）           | 全エンドポイント共通のデータセンター                              |
-| `minCudaVersion` | なし                            | CUDA ドライバーの下限。古いホストで vLLM が起動に失敗するのを防ぐ |
+| 項目             | 今の値                          | 意味                                                                 |
+| ---------------- | ------------------------------- | -------------------------------------------------------------------- |
+| `image`          | `runpod/worker-v1-vllm:v2.27.2` | `engine.image` を書かない vllm engine のイメージ。タグは必ず固定する |
+| `type`           | `QUEUE`                         | キュー型。`/run`・`/status`・`/openai/v1` が使える                   |
+| `disk`           | `50`                            | コンテナのディスク（GB）                                             |
+| `flashboot`      | `FLASHBOOT`                     | 起動を速くする Runpod の機能                                         |
+| `timeout`        | `600000`                        | 1 リクエストの上限（ミリ秒）                                         |
+| `idleTimeout`    | `5`                             | 何秒使われなければワーカーを止めるか                                 |
+| `scaling`        | `QUEUE_DELAY 4`                 | キューの待ち時間でワーカーを増やす                                   |
+| `env`            | 2 件                            | 全エンドポイント共通の環境変数（今は decision の worker にも入る）   |
+| `dataCenters`    | なし（Runpod が選ぶ）           | 全エンドポイント共通のデータセンター                                 |
+| `minCudaVersion` | なし                            | CUDA ドライバーの下限。古いホストで vLLM が起動に失敗するのを防ぐ    |
 
 ### apply
 
@@ -651,7 +694,8 @@ plan が止める設定:
 | プール外の `excludedTypes`、全部を外す指定                                                                    | Runpod が 400 を返す、または GPU が 0 種類になる                |
 | `TOKEN`・`SECRET`・`API_KEY` などを含む env                                                                   | 値が PR コメントに出てしまうため設定ファイルには書かない        |
 | Runpod にない Secret 名を `secrets` で参照                                                                    | worker の起動時に値が入らない                                   |
-| 同じ環境変数を `vllm` と `secrets` の両方に書く                                                               | どちらの値を使うか決められない                                  |
+| 同じ環境変数を `engine.env`（または `vllm`）と `secrets` の両方に書く                                         | どちらの値を使うか決められない                                  |
+| `engine` と、以前の `image`・`model.api`・`model.vllm` を一緒に書く                                           | どちらの設定を使うか決められない                                |
 | `source` が空、`min` > `max`                                                                                  | ワーカーが起動できない                                          |
 | 知らない項目名、`endpoint.config.ts` のないディレクトリ                                                       | 書き間違いを早めに見つける                                      |
 | Runpod 側に同じ名前のエンドポイントが 2 つ                                                                    | どちらを更新するか決められない                                  |
@@ -774,6 +818,8 @@ Runpod の AI SDK provider は、モデル ID をそのまま vLLM へのリク�
 | 9   | TypeScript の定義（`endpoints/<名前>/`・`@loorel/define`）  | 🧪 テスト済み                                |
 | 10  | Decision API（`api: "decision"`・`decider()`）              | 🧪 モックで検証済み・実推論は未検証          |
 | 11  | 決定モデルの worker イメージ（`workers/decision`）          | 🧪 ハンドラーのテスト済み・Runpod 上は未検証 |
+| 12  | `engine`（`vllm`・`decision`）と以前の書き方からの移行      | 🧪 テスト済み・Runpod に送る内容は変わらない |
+| 13  | `defaults` を共通部分と engine ごとの部分に分ける           | 📝 次に行う                                  |
 
 ## 開発
 

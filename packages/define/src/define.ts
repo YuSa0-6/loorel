@@ -36,27 +36,59 @@ export interface VllmEnv {
   [name: string]: EnvValue | undefined;
 }
 
-/** What is served: the model weights and how vLLM runs them. */
+/** Env vars of a worker other than vLLM. UPPER_SNAKE_CASE names. */
+export interface WorkerEnv {
+  [name: string]: EnvValue | undefined;
+}
+
+/** What is served: the model's name and where its weights come from. */
 export interface ModelDef {
   /**
    * The model name that apps send in `model`. Lowercase a-z, 0-9 and -.
    * Set as OPENAI_SERVED_MODEL_NAME_OVERRIDE.
    */
   name: string;
-  /** Hugging Face repository, for example "Qwen/Qwen3-8B". Set as MODEL_NAME. */
-  source: string;
   /**
-   * How callers talk to the model. Defaults to "openai" (chat completions through vLLM).
-   * "decision" is the System One request format of decision models such as Jev, Cloudflare
-   * Clef and Perplexity Decider: a state and typed questions in, probabilities out.
-   * A decision model needs an endpoint `image` whose worker serves that format.
+   * Where the worker gets the model, set as MODEL_NAME. What it means depends on the engine:
+   * a Hugging Face repository such as "Qwen/Qwen3-8B" for vllm, an Ollama model such as
+   * "clef-flash" for the decision worker in workers/decision.
    */
+  source: string;
+  /** @deprecated Set the endpoint's `engine` instead; its type decides the API. */
   api?: "openai" | "decision";
-  /** vLLM worker env vars. Secret values do not belong here; use `secrets`. */
+  /** @deprecated Set the endpoint's `engine: { type: "vllm", env }` instead. */
   vllm?: VllmEnv;
   /** env var name -> Runpod secret name. Runpod fills in the value when a worker boots. */
   secrets?: Record<string, string>;
 }
+
+/** Runpod's vLLM worker. Callers use the OpenAI-compatible chat API (`client.model()`). */
+export interface VllmEngine {
+  type: "vllm";
+  /** Worker image with an exact tag, instead of defaults.image. */
+  image?: string;
+  /** vLLM worker env vars. Secret values do not belong here; use the model's `secrets`. */
+  env?: VllmEnv;
+}
+
+/**
+ * A worker that serves the decision API (`client.decider()`): the System One request format of
+ * decision models such as Jev, Cloudflare Clef and Perplexity Decider. A state and typed
+ * questions in, probabilities out. workers/decision is one such worker.
+ */
+export interface DecisionEngine {
+  type: "decision";
+  /**
+   * Worker image with an exact tag. Required: the vLLM image in defaults does not serve the
+   * decision API. The worker takes { input: <decision request> } on /runsync.
+   */
+  image: string;
+  /** Worker env vars. */
+  env?: WorkerEnv;
+}
+
+/** How the model is run: the worker image, its env vars and the API callers use. */
+export type Engine = VllmEngine | DecisionEngine;
 
 export type Scaling =
   | {
@@ -74,7 +106,7 @@ export type FlashBoot = "OFF" | "FLASHBOOT" | "PRIORITY_FLASHBOOT";
 
 /** Settings every endpoint starts from. An endpoint may override some of them. */
 export interface Defaults {
-  /** vLLM worker image with an exact tag. */
+  /** vLLM worker image with an exact tag. Used by vllm engines that set no image. */
   image: string;
   type: "QUEUE" | "LOAD_BALANCER";
   /** Container disk in GB. The model is downloaded here. */
@@ -127,6 +159,8 @@ export interface GpuByType extends GpuCommon {
 export interface EndpointDef {
   /** Usually imported from ./model.config.ts, or from another endpoint's directory. */
   model: ModelDef;
+  /** How the model is run. Defaults to `{ type: "vllm" }`. */
+  engine?: Engine;
   gpu: GpuByPool | GpuByType;
   workers: {
     /** Workers kept running. 0 means nothing is billed while idle. */
@@ -134,12 +168,9 @@ export interface EndpointDef {
     /** Most workers running at the same time. */
     max: number;
   };
-  /**
-   * Worker image with an exact tag, instead of defaults.image. Required for a decision model:
-   * its worker takes { input: <decision request> } on /runsync and returns the decision response.
-   */
+  /** @deprecated Set `engine.image` instead. */
   image?: string;
-  /** Env vars for this endpoint only, on top of defaults.env and the model's vllm. */
+  /** Env vars for this endpoint only, on top of defaults.env and `engine.env`. */
   env?: VllmEnv;
   /** Data centers for this endpoint, instead of defaults.dataCenters. */
   dataCenters?: string[];
@@ -162,5 +193,6 @@ export interface Config {
 }
 
 export const defineModel = <const M extends ModelDef>(model: M): M => model;
+export const defineEngine = <const E extends Engine>(engine: E): E => engine;
 export const defineEndpoint = <const E extends EndpointDef>(endpoint: E): E => endpoint;
 export const defineConfig = (config: Config): Config => config;
