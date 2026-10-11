@@ -3,6 +3,7 @@ import { writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { APICallError, generateText } from "ai";
+import { abortable } from "./abort.ts";
 import { createLoorelModel, InferenceConfigError, type LoorelModelOptions } from "./ai.ts";
 
 export const SMOKE_OUTPUT = "LOOREL_OK";
@@ -34,8 +35,9 @@ export type SmokeResult = {
 );
 
 /** Uses the real SDK, with an injectable HTTP transport for cost-free tests. */
+// fallow-ignore-next-line complexity
 export async function runInferenceSmoke(
-  options: LoorelModelOptions & { timeoutMs?: number },
+  options: LoorelModelOptions & { timeoutMs?: number; signal?: AbortSignal },
 ): Promise<SmokeResult> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600_000) {
@@ -44,6 +46,9 @@ export async function runInferenceSmoke(
   const model = createLoorelModel(options);
   const started = Date.now();
   const controller = new AbortController();
+  const signal = options.signal
+    ? AbortSignal.any([controller.signal, options.signal])
+    : controller.signal;
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const fail = (error: SmokeFailure): SmokeResult => ({
     schemaVersion: 1,
@@ -54,15 +59,19 @@ export async function runInferenceSmoke(
   });
 
   try {
-    const result = await generateText({
-      model,
-      prompt: `Reply with exactly ${SMOKE_OUTPUT}. Do not explain or add punctuation.\n/no_think`,
-      temperature: 0,
-      maxOutputTokens: 32,
-      // SDK defaults retry some failures. A smoke check must not multiply paid requests.
-      maxRetries: 0,
-      abortSignal: controller.signal,
-    });
+    signal.throwIfAborted();
+    const result = await abortable(
+      generateText({
+        model,
+        prompt: `Reply with exactly ${SMOKE_OUTPUT}. Do not explain or add punctuation.\n/no_think`,
+        temperature: 0,
+        maxOutputTokens: 32,
+        // SDK defaults retry some failures. A smoke check must not multiply paid requests.
+        maxRetries: 0,
+        abortSignal: signal,
+      }),
+      signal,
+    );
     if (!result.text.trim()) {
       return fail({ code: "empty_output", message: "The endpoint returned no text." });
     }
@@ -86,6 +95,9 @@ export async function runInferenceSmoke(
       },
     };
   } catch (error) {
+    if (options.signal?.aborted) {
+      return fail({ code: "cancelled", message: "Inference was cancelled." });
+    }
     if (controller.signal.aborted) {
       return fail({ code: "timeout", message: "Inference exceeded the configured timeout." });
     }

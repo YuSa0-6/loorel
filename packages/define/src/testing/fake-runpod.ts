@@ -38,6 +38,7 @@ export function fakeRunpod(
     fetch: undefined as never,
   };
   let nextId = 1;
+  while (state.endpoints.some((e) => e.id === `ep${nextId}`)) nextId++;
   const json = (status: number, body?: unknown) =>
     new Response(body === undefined ? null : JSON.stringify(body), {
       status,
@@ -54,6 +55,12 @@ export function fakeRunpod(
     }
 
     const route = url.pathname.replace(/^\/v2/, "");
+    const health = route.match(/^\/([^/]+)\/health$/);
+    if (url.hostname === "api.runpod.ai" && method === "GET" && health) {
+      return state.endpoints.some((e) => e.id === health[1])
+        ? json(200, { workers: { ready: 0, running: 0 } })
+        : json(404, { title: "Not Found" });
+    }
     if (method === "GET" && route === "/catalog/gpus") return json(200, { gpus: GPU_TYPES });
     if (method === "GET" && route === "/catalog/datacenters")
       return json(200, { dataCenters: DATA_CENTERS });
@@ -90,6 +97,7 @@ export function fakeRunpod(
     if (index === -1)
       return json(404, { title: "Not Found", status: 404, detail: "endpoint not found" });
     const current = state.endpoints[index]!;
+    if (method === "GET") return json(200, current);
     if (method === "PATCH") {
       const gpu = body.gpu?.pools
         ? {

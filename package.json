@@ -9,6 +9,7 @@
     "plan": "node packages/define/src/sync.ts --plan",
     "apply": "node packages/define/src/sync.ts --apply",
     "smoke": "node packages/client/src/smoke.ts",
+    "pipeline": "node infra/runpod/pipeline.ts",
     "types": "node packages/define/src/types.ts"
   },
   "dependencies": {
