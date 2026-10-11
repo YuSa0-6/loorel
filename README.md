@@ -732,14 +732,17 @@ https://gateway.ai.cloudflare.com/v1/{account}/runpod/custom-runpod/v2/{endpoint
 
 ## GitHub Actions
 
-| workflow                           | きっかけ                                                       | すること                                                               |
-| ---------------------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| `.github/workflows/plan.yml`       | PR                                                             | `vp check`・テストのあと plan を PR コメントに出す（1 件を上書き更新） |
-| `.github/workflows/apply.yml`      | main への push（`loorel.config.ts`・`endpoints/**`）、手動実行 | 承認後に apply を実行し、`endpoints.json` が変わったら bot PR を作る   |
-| `.github/workflows/runpod-e2e.yml` | main からの手動実行のみ                                        | 月額費用を確認し、一時 endpoint の実 E2E、cleanup、結果保存を行う      |
+| workflow                           | きっかけ                                                       | すること                                                                  |
+| ---------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `.github/workflows/plan.yml`       | PR                                                             | `vp check`・テストのあと plan を PR コメントに出す（1 件を上書き更新）    |
+| `.github/workflows/apply.yml`      | main への push（`loorel.config.ts`・`endpoints/**`）、手動実行 | 承認後に apply を実行し、`endpoints.json` が変わったら bot PR を作る      |
+| `.github/workflows/runpod-e2e.yml` | main からの手動実行のみ                                        | 月額費用を確認し、一時 endpoint の実 E2E、cleanup、結果保存を行う         |
+| `.github/workflows/zizmor.yml`     | `.github/**` を変える PR・main への push、手動実行             | [zizmor](https://docs.zizmor.sh) で workflow のセキュリティ設定を検査する |
 
 手動実行（Actions → apply → Run workflow）では `prune` を選べます。apply は同時に 1 本だけ動き、後から来たものは順番待ちになります。
 `packages/define/**` だけの変更では apply を自動起動しません。同期ロジックの変更を Runpod に反映する必要がある場合は、差分と費用を確認してから手動実行してください。
+
+workflow が使う action はコミット SHA で固定し、後ろのコメントにバージョンを書いています。更新するときは SHA とコメントを両方書き換えてください。
 
 ### 手動 Runpod E2E
 
