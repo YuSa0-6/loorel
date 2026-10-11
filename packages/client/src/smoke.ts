@@ -3,11 +3,14 @@ import { writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { APICallError, generateText } from "ai";
+import { EnvHttpProxyAgent, fetch as undiciFetch } from "undici";
 import { abortable } from "./abort.ts";
 import { createLoorelModel, InferenceConfigError, type LoorelModelOptions } from "./ai.ts";
 
 export const SMOKE_OUTPUT = "LOOREL_OK";
 const DEFAULT_TIMEOUT_MS = 120_000;
+// Extra time for the socket so the abort timer fires first and the result reads "timeout".
+const SOCKET_MARGIN_MS = 5_000;
 
 interface SmokeFailure {
   code: string;
@@ -34,6 +37,21 @@ export type SmokeResult = {
   | { ok: false; error: SmokeFailure }
 );
 
+/**
+ * HTTP transport whose socket limits follow timeoutMs. Node's built-in fetch stops waiting
+ * for response headers after 300 s, which a cold start (model download) can exceed.
+ * Proxy settings are read from HTTP_PROXY / HTTPS_PROXY / NO_PROXY as before.
+ */
+export function longRequestTransport(timeoutMs: number) {
+  const limit = timeoutMs + SOCKET_MARGIN_MS;
+  const dispatcher = new EnvHttpProxyAgent({ headersTimeout: limit, bodyTimeout: limit });
+  // The AI SDK calls fetch with a URL string and an init object.
+  const fetchFn = ((input: string | URL, init?: RequestInit) =>
+    undiciFetch(input, { ...(init as object), dispatcher })) as unknown as typeof fetch;
+  // destroy, not close: after a timeout the request may still be pending.
+  return { fetch: fetchFn, close: () => dispatcher.destroy() };
+}
+
 /** Uses the real SDK, with an injectable HTTP transport for cost-free tests. */
 // fallow-ignore-next-line complexity
 export async function runInferenceSmoke(
@@ -43,7 +61,14 @@ export async function runInferenceSmoke(
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600_000) {
     throw new InferenceConfigError("timeoutMs must be an integer from 1 to 600000");
   }
-  const model = createLoorelModel(options);
+  const transport = options.fetch ? undefined : longRequestTransport(timeoutMs);
+  let model: ReturnType<typeof createLoorelModel>;
+  try {
+    model = createLoorelModel({ ...options, fetch: options.fetch ?? transport?.fetch });
+  } catch (error) {
+    await transport?.close();
+    throw error;
+  }
   const started = Date.now();
   const controller = new AbortController();
   const signal = options.signal
@@ -113,6 +138,7 @@ export async function runInferenceSmoke(
     return fail({ code: "request_error", message: "Inference or response validation failed." });
   } finally {
     clearTimeout(timer);
+    await transport?.close();
   }
 }
 

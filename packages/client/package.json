@@ -7,6 +7,7 @@
   },
   "dependencies": {
     "@runpod/ai-sdk-provider": "1.4.0",
-    "ai": "^6"
+    "ai": "^6",
+    "undici": "^7"
   }
 }
