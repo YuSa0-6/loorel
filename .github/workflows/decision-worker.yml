@@ -17,10 +17,11 @@ on:
 permissions:
   contents: read
 
-# A newer run on the same pull request replaces the older one. main pushes are never cancelled.
+# A newer run on the same pull request replaces the older one. Every other run gets its own
+# group, so no main push is cancelled or dropped from the queue.
 concurrency:
-  group: decision-worker-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: decision-worker-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   image:
