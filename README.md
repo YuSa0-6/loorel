@@ -737,6 +737,7 @@ https://gateway.ai.cloudflare.com/v1/{account}/runpod/custom-runpod/v2/{endpoint
 | `.github/workflows/plan.yml`       | PR                                                             | `vp check`・テストのあと plan を PR コメントに出す（1 件を上書き更新）    |
 | `.github/workflows/apply.yml`      | main への push（`loorel.config.ts`・`endpoints/**`）、手動実行 | 承認後に apply を実行し、`endpoints.json` が変わったら bot PR を作る      |
 | `.github/workflows/runpod-e2e.yml` | main からの手動実行のみ                                        | 月額費用を確認し、一時 endpoint の実 E2E、cleanup、結果保存を行う         |
+| `.github/workflows/smoke.yml`      | main からの手動実行のみ                                        | apply 済みの endpoint に直接・Gateway 経由で 1 回ずつ推論し、結果を保存   |
 | `.github/workflows/zizmor.yml`     | `.github/**` を変える PR・main への push、手動実行             | [zizmor](https://docs.zizmor.sh) で workflow のセキュリティ設定を検査する |
 
 手動実行（Actions → apply → Run workflow）では `prune` を選べます。apply は同時に 1 本だけ動き、後から来たものは順番待ちになります。
@@ -759,6 +760,26 @@ Actions → **runpod-e2e** → **Run workflow** から `main` を選びます。
 workflow は `production` の承認後、1 GPU・最大 worker 1、8 分での中断信号と別枠の cleanup、15 分の job 上限、`apply` と共有する同時実行制限で動きます。失敗やキャンセル後は、成果物に記録された ID の名前が今回の一時名に一致するときだけ cleanup を再試行します。作成応答が不明な場合は名前だけから削除対象を推測しません。強制終了では cleanup や成果物保存を保証できないため、実行後に Runpod 側の残存リソースも確認してください。
 
 `artifacts/budget.json`、`artifacts/e2e.json`、`artifacts/cleanup.json` の安全な項目だけを **runpod-e2e-results-<run ID>** に 7 日間保存します。成功判断は `e2e.json` の `ok: true` と `cleanup.status: succeeded`、または回復処理後の `cleanup.json` の状態、および Runpod 側の削除後確認で行います。HTTP 本文やキーは成果物に保存しません。
+
+### 手動 smoke
+
+Actions → **smoke** → **Run workflow** から `main` を選びます。apply で作った endpoint に `pnpm smoke` を 1 回ずつ送り、`LOOREL_OK` が返るかを確かめます。endpoint の作成・変更・削除はしません。ID は `endpoints.json` から読みます。
+
+| 入力           | 既定値     | 内容                                                                   |
+| -------------- | ---------- | ---------------------------------------------------------------------- |
+| `confirm_cost` | オフ       | オンにしないと推論を送らない。GPU の起動と推論には料金がかかる         |
+| `model`        | `qwen3-8b` | `endpoints.json` のキー（`defineModel` の `name`）                     |
+| `route`        | `both`     | `direct`（`api.runpod.ai`）、`gateway`（AI Gateway 経由）、`both`      |
+| `timeout_ms`   | `600000`   | 1 リクエストの上限。最初のリクエストはコールドスタートを待つことがある |
+
+| 設定                    | 場所                                      | 必要な route |
+| ----------------------- | ----------------------------------------- | ------------ |
+| `RUNPOD_API_KEY`        | GitHub Environment `production` の secret | 両方         |
+| `CF_AIG_TOKEN`          | Repository secret                         | `gateway`    |
+| `CLOUDFLARE_ACCOUNT_ID` | Repository variable                       | `gateway`    |
+| `CF_AIG_GATEWAY_ID`     | Repository variable（なければ `runpod`）  | `gateway`    |
+
+`direct` が失敗しても `gateway` は実行し、1 回の実行で両方の結果がわかるようにしています。結果は Job summary と **smoke-results-<run ID>**（7 日間保存）で確認します。
 
 ### 最初に 1 回だけ行うリポジトリ設定
 
