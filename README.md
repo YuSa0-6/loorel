@@ -9,7 +9,7 @@
 
 [Quickstart](#quickstart) · [Why](#why-loorel) · [しくみ](#しくみ) · [リファレンス](#リファレンス) · [FAQ](#よくある質問) · [ロードマップ](#ロードマップ)
 
-`preview` · 実装 11 / 11（実 API での動作確認待ち）
+`preview` · 実装 12 / 12（実 API での動作確認待ち）
 
 </div>
 
@@ -774,6 +774,7 @@ Runpod の AI SDK provider は、モデル ID をそのまま vLLM へのリク�
 | 9   | TypeScript の定義（`endpoints/<名前>/`・`@loorel/define`）  | 🧪 テスト済み                                |
 | 10  | Decision API（`api: "decision"`・`decider()`）              | 🧪 モックで検証済み・実推論は未検証          |
 | 11  | 決定モデルの worker イメージ（`workers/decision`）          | 🧪 ハンドラーのテスト済み・Runpod 上は未検証 |
+| 12  | 一時エンドポイントの E2E pipeline（`pnpm pipeline`）        | 🧪 モックで検証済み・実 Runpod は未検証      |
 
 ## 開発
 
