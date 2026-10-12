@@ -1,11 +1,13 @@
 import { spawnSync } from "node:child_process";
+import { once } from "node:events";
+import { createServer } from "node:http";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test, vi } from "vite-plus/test";
 import { createLoorelModel, InferenceConfigError } from "./ai.ts";
-import { runInferenceSmoke, smoke, SMOKE_OUTPUT } from "./smoke.ts";
+import { longRequestTransport, runInferenceSmoke, smoke, SMOKE_OUTPUT } from "./smoke.ts";
 
 const KEY = "test-runpod-secret";
 const GATEWAY_TOKEN = "test-gateway-secret";
@@ -49,7 +51,10 @@ async function cli(
   return { code, json: JSON.parse(lines[0]!) as Record<string, unknown>, output: lines[0]! };
 }
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllEnvs();
+});
 
 describe("Runpod SDK inference smoke", () => {
   test("uses the actual SDK and verifies the served model, path, auth and bounded request", async () => {
@@ -351,5 +356,39 @@ describe("inference configuration", () => {
     expect(code).toBe(2);
     expect(json).toMatchObject({ ok: false, error: { code: "configuration_error" } });
     expect(mock.requests).toHaveLength(0);
+  });
+});
+
+describe("long request transport", () => {
+  test("waits for late response headers and forwards method, headers and body", async () => {
+    const received: { method?: string; auth?: string; body: string }[] = [];
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        received.push({ method: req.method, auth: req.headers.authorization, body });
+        // Headers arrive late, as they do while a cold worker starts.
+        setTimeout(() => res.writeHead(200, { "content-type": "application/json" }).end("{}"), 300);
+      });
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    vi.stubEnv("NO_PROXY", "127.0.0.1");
+    vi.stubEnv("no_proxy", "127.0.0.1");
+    const { port } = server.address() as { port: number };
+    const transport = longRequestTransport(1_000);
+    try {
+      const response = await transport.fetch(`http://127.0.0.1:${port}/v1/chat`, {
+        method: "POST",
+        headers: { authorization: "Bearer t" },
+        body: '{"a":1}',
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({});
+      expect(received).toEqual([{ method: "POST", auth: "Bearer t", body: '{"a":1}' }]);
+    } finally {
+      await transport.close();
+      server.close();
+    }
   });
 });
