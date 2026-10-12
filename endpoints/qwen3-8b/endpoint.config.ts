@@ -5,6 +5,7 @@ export default defineEndpoint({
   model,
   engine: {
     type: "vllm",
+    reasoningParser: "qwen3", // keep Qwen3's <think>…</think> out of the reply text
     env: { MAX_MODEL_LEN: 8192 },
   },
   gpu: { pools: ["ADA_24"], count: 1 },

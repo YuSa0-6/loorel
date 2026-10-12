@@ -16,6 +16,8 @@ interface SmokeFailure {
   code: string;
   message: string;
   httpStatus?: number;
+  /** For unexpected_output: facts about the text, never the text itself. */
+  output?: { thinkBlock: boolean; containsExpected: boolean };
 }
 
 export type SmokeResult = {
@@ -104,7 +106,15 @@ export async function runInferenceSmoke(
       return fail({ code: "incomplete_output", message: "Generation did not finish normally." });
     }
     if (result.text.trim() !== SMOKE_OUTPUT) {
-      return fail({ code: "unexpected_output", message: "The output did not match LOOREL_OK." });
+      return fail({
+        code: "unexpected_output",
+        message: "The output did not match LOOREL_OK.",
+        // A reasoning model without engine.reasoningParser puts <think>…</think> in the text.
+        output: {
+          thinkBlock: /<think>[\s\S]*?<\/think>/.test(result.text),
+          containsExpected: result.text.includes(SMOKE_OUTPUT),
+        },
+      });
     }
     return {
       schemaVersion: 1,

@@ -254,6 +254,8 @@ CLI の `--model` / `--endpoint-id` / `--base-url` を省略すると、`LOOREL_
 }
 ```
 
+`unexpected_output` のときは、本文のかわりに `output.thinkBlock`（`<think>…</think>` があったか）と `output.containsExpected`（`LOOREL_OK` を含んでいたか）を残します。`thinkBlock: true` なら、`engine.reasoningParser` の設定漏れが原因です。
+
 終了コードは `0` が検証成功、`1` が HTTP・タイムアウト・応答検証などの失敗、`2` が引数・設定・結果ファイルの書き込みエラーです。設定エラーでは推論リクエストを送りません。`usage` が返らない場合のトークン数は `null` です。
 
 GitHub Actions などの既存パイプラインには、承認済みの推論ステップとして組み込めます。たとえば直接接続の場合:
@@ -383,6 +385,23 @@ flowchart LR
   L -->|"api"| G["loorel.gen.ts<br>→ model() / decider()"]
 ```
 
+##### 思考するモデル（`reasoningParser`）
+
+Qwen3 などの思考するモデルは、答えの前に `<think>…</think>` を出力します。`engine.reasoningParser` を書くと、vLLM がその部分を本文から分けて `reasoning_content` に入れます。アプリが受け取る本文は答えだけになります。
+
+```ts
+engine: { type: "vllm", reasoningParser: "qwen3", env: { MAX_MODEL_LEN: 8192 } },
+```
+
+| 値             | 対象のモデルの例 |
+| -------------- | ---------------- |
+| `qwen3`        | Qwen3            |
+| `deepseek_r1`  | DeepSeek-R1      |
+| `granite`      | IBM Granite      |
+| `hunyuan_a13b` | Hunyuan-A13B     |
+
+Runpod には `REASONING_PARSER` として送ります。`REASONING_PARSER` を `env` に直接書くとエラーになります。思考しないモデルでは書きません。
+
 同じ engine の設定を複数のエンドポイントで使うときは、`defineEngine` で書いて import します。
 
 ```ts
@@ -455,13 +474,14 @@ export default defineEndpoint({
 
 #### 環境変数の組み立て
 
-右に行くほど優先されます。`MODEL_NAME` と `OPENAI_SERVED_MODEL_NAME_OVERRIDE` は自動で入るので、手で書くとエラーになります。アプリは `name` と同じ名前で呼べます。
+右に行くほど優先されます。`MODEL_NAME`・`OPENAI_SERVED_MODEL_NAME_OVERRIDE`・`REASONING_PARSER` は設定から自動で入るので、手で書くとエラーになります。アプリは `name` と同じ名前で呼べます。
 
 ```mermaid
 flowchart LR
   D["defaults.env<br>GPU_MEMORY_UTILIZATION<br>MAX_CONCURRENCY"] --> M(("+"))
   SRC["source<br>→ MODEL_NAME"] --> M
   V["engine.env<br>MAX_MODEL_LEN …"] --> M
+  RP["engine.reasoningParser<br>→ REASONING_PARSER"] --> M
   EP["endpoint の env"] --> M
   S["secrets<br>HF_TOKEN → {{ RUNPOD_SECRET_… }}"] --> M
   N["name<br>→ OPENAI_SERVED_MODEL_NAME_OVERRIDE"] --> M

@@ -146,8 +146,23 @@ describe("Runpod SDK inference smoke", () => {
   test("a successful HTTP response with the wrong text still fails", async () => {
     const { code, json, output } = await cli(transport(() => Response.json(completion(KEY))));
     expect(code).toBe(1);
-    expect(json).toMatchObject({ ok: false, error: { code: "unexpected_output" } });
+    expect(json).toMatchObject({
+      ok: false,
+      error: { code: "unexpected_output", output: { thinkBlock: false, containsExpected: false } },
+    });
     expect(output).not.toContain(KEY);
+  });
+
+  test("a reply wrapped in a think block fails and says so without the text", async () => {
+    const text = `<think>\n${KEY}\n</think>\n\n${SMOKE_OUTPUT}`;
+    const { code, json, output } = await cli(transport(() => Response.json(completion(text))));
+    expect(code).toBe(1);
+    expect(json).toMatchObject({
+      ok: false,
+      error: { code: "unexpected_output", output: { thinkBlock: true, containsExpected: true } },
+    });
+    expect(output).not.toContain(KEY);
+    expect(output).not.toContain("<think>");
   });
 
   test("truncated generation cannot pass even if its text matches", async () => {

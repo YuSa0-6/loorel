@@ -36,6 +36,14 @@ export interface VllmEnv {
   [name: string]: EnvValue | undefined;
 }
 
+/**
+ * vLLM reasoning parsers, set as REASONING_PARSER. A parser moves a reasoning model's thinking,
+ * such as Qwen3's `<think>…</think>`, out of the reply text into `reasoning_content`.
+ * https://docs.runpod.io/serverless/vllm/environment-variables
+ */
+export const REASONING_PARSERS = ["deepseek_r1", "qwen3", "granite", "hunyuan_a13b"] as const;
+export type ReasoningParser = (typeof REASONING_PARSERS)[number];
+
 /** Env vars of a worker other than vLLM. UPPER_SNAKE_CASE names. */
 export interface WorkerEnv {
   [name: string]: EnvValue | undefined;
@@ -67,6 +75,11 @@ export interface VllmEngine {
   type: "vllm";
   /** Worker image with an exact tag, instead of defaults.image. */
   image?: string;
+  /**
+   * Splits a reasoning model's thinking from its reply, so callers get only the answer.
+   * Set as REASONING_PARSER. Leave unset for models that do not think.
+   */
+  reasoningParser?: ReasoningParser;
   /** vLLM worker env vars. Secret values do not belong here; use the model's `secrets`. */
   env?: VllmEnv;
 }
