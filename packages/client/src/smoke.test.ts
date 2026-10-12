@@ -384,6 +384,7 @@ describe("long request transport", () => {
         body: '{"a":1}',
       });
       expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({});
       expect(received).toEqual([{ method: "POST", auth: "Bearer t", body: '{"a":1}' }]);
     } finally {
       await transport.close();
