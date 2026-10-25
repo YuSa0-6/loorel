@@ -713,6 +713,55 @@ describe("GPU types, data centers, network volumes and CUDA", () => {
     expect(output).toContain('+     env.TENSOR_PARALLEL_SIZE: "2"');
   });
 
+  test("engine.reasoningParser is sent as REASONING_PARSER", async () => {
+    const endpoint = qwen((e) => {
+      e.engine = { type: "vllm", reasoningParser: "qwen3", env: { MAX_MODEL_LEN: 8192 } };
+    });
+    const { code, output } = await run(
+      await makeRepo({ "qwen3-8b": endpoint }),
+      fakeRunpod(),
+      "--plan",
+    );
+    expect(code).toBe(0);
+    expect(output).toContain('+     env.REASONING_PARSER: "qwen3"');
+  });
+
+  test.each<[string, (e: EndpointDef) => void]>([
+    [
+      "engine.env",
+      (e) => {
+        e.engine = { type: "vllm", env: { REASONING_PARSER: "qwen3" } };
+      },
+    ],
+    [
+      "endpoint env",
+      (e) => {
+        e.env = { REASONING_PARSER: "qwen3" };
+      },
+    ],
+  ])("REASONING_PARSER written in %s is rejected", async (_, edit) => {
+    const { code, output } = await run(
+      await makeRepo({ "qwen3-8b": qwen(edit) }),
+      fakeRunpod(),
+      "--plan",
+    );
+    expect(code).toBe(1);
+    expect(output).toContain("REASONING_PARSER is set from engine.reasoningParser");
+  });
+
+  test("an unknown reasoning parser is rejected", async () => {
+    const endpoint = qwen((e) => {
+      e.engine = { type: "vllm", reasoningParser: "qwen2" as never };
+    });
+    const { code, output } = await run(
+      await makeRepo({ "qwen3-8b": endpoint }),
+      fakeRunpod(),
+      "--plan",
+    );
+    expect(code).toBe(1);
+    expect(output).toContain("reasoningParser");
+  });
+
   test("an env var set in both endpoint env and the model's secrets is rejected", async () => {
     const endpoint = qwen((e) => {
       e.model.secrets = { HF_TOKEN: "hf-token" };

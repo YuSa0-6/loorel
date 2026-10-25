@@ -7,7 +7,7 @@ import { access, readdir } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import * as v from "valibot";
-import type { FlashBoot, Scaling } from "./define.ts";
+import { type FlashBoot, REASONING_PARSERS, type Scaling } from "./define.ts";
 
 export type { FlashBoot, Scaling };
 
@@ -48,9 +48,11 @@ const secretRef = (name: string) => `{{ RUNPOD_SECRET_${name} }}`;
 // Set by sync from the model, so they cannot be written by hand.
 const SERVED_NAME_KEY = "OPENAI_SERVED_MODEL_NAME_OVERRIDE";
 const SOURCE_KEY = "MODEL_NAME";
+const REASONING_KEY = "REASONING_PARSER";
 const RESERVED = {
   [SERVED_NAME_KEY]: `${SERVED_NAME_KEY} is set from the model name`,
   [SOURCE_KEY]: `${SOURCE_KEY} is set from the model source`,
+  [REASONING_KEY]: `${REASONING_KEY} is set from engine.reasoningParser`,
 } as Record<string, string>;
 
 const EnvName = v.pipe(
@@ -147,7 +149,12 @@ const Model = v.pipe(
 );
 
 const EngineSchema = v.variant("type", [
-  v.strictObject({ type: v.literal("vllm"), image: v.optional(Image), env: v.optional(Env, {}) }),
+  v.strictObject({
+    type: v.literal("vllm"),
+    image: v.optional(Image),
+    reasoningParser: v.optional(v.picklist(REASONING_PARSERS)),
+    env: v.optional(Env, {}),
+  }),
   v.strictObject({ type: v.literal("decision"), image: Image, env: v.optional(Env, {}) }),
 ]);
 
@@ -318,8 +325,16 @@ function engineOf(e: EndpointOutput): EngineOutput {
 /** What an engine runs on Runpod: the worker image, its env vars and the API callers use. */
 function workerOf(engine: EngineOutput, defaults: DefaultsOutput) {
   switch (engine.type) {
-    case "vllm":
-      return { api: "openai" as const, image: engine.image ?? defaults.image, env: engine.env };
+    case "vllm": {
+      const reasoning: Record<string, string> = engine.reasoningParser
+        ? { [REASONING_KEY]: engine.reasoningParser }
+        : {};
+      return {
+        api: "openai" as const,
+        image: engine.image ?? defaults.image,
+        env: { ...engine.env, ...reasoning },
+      };
+    }
     case "decision":
       return { api: "decision" as const, image: engine.image, env: engine.env };
   }
